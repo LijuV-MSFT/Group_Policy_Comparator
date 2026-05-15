@@ -31,7 +31,7 @@ function Get-GpoExtractedObjects {
                             Name            = $right.Name
                             Member          = @($right.Member | ForEach-Object {
                                 $_.SID.'#text'
-                            }) -join ';'
+                            } | Sort-Object) -join ';'
                         }
                     }
 
@@ -154,11 +154,20 @@ function Compare-ObjectSet {
         [Parameter(Mandatory)]
         [string]$ObjectType,
 
+        [Parameter(Mandatory)]
+        [string]$ReferenceGpoName,
+
+        [Parameter(Mandatory)]
+        [string]$DifferenceGpoName,
+
         [switch]$IncludeSame
     )
 
     $ReferenceObject  = @($ReferenceObject)
     $DifferenceObject = @($DifferenceObject)
+
+    $referenceValueColumn  = "$ReferenceGpoName Value"
+    $differenceValueColumn = "$DifferenceGpoName Value"
 
     $refHash = @{}
     $difHash = @{}
@@ -189,7 +198,8 @@ function Compare-ObjectSet {
         if (-not $ref) {
 
             foreach ($property in $CompareProperties) {
-                [pscustomobject]@{
+
+                $row = [ordered]@{
                     ObjectType      = $ObjectType
                     Section         = $dif.Section
                     SettingCategory = $dif.SettingCategory
@@ -197,9 +207,12 @@ function Compare-ObjectSet {
                     DifferenceType  = "Added"
                     SettingKey      = $key
                     Property        = $property
-                    ReferenceValue  = $null
-                    DifferenceValue = $dif.$property
                 }
+
+                $row[$referenceValueColumn]  = $null
+                $row[$differenceValueColumn] = $dif.$property
+
+                [pscustomobject]$row
             }
 
             continue
@@ -208,7 +221,8 @@ function Compare-ObjectSet {
         if (-not $dif) {
 
             foreach ($property in $CompareProperties) {
-                [pscustomobject]@{
+
+                $row = [ordered]@{
                     ObjectType      = $ObjectType
                     Section         = $ref.Section
                     SettingCategory = $ref.SettingCategory
@@ -216,9 +230,12 @@ function Compare-ObjectSet {
                     DifferenceType  = "Removed"
                     SettingKey      = $key
                     Property        = $property
-                    ReferenceValue  = $ref.$property
-                    DifferenceValue = $null
                 }
+
+                $row[$referenceValueColumn]  = $ref.$property
+                $row[$differenceValueColumn] = $null
+
+                [pscustomobject]$row
             }
 
             continue
@@ -230,7 +247,8 @@ function Compare-ObjectSet {
             $difValue = $dif.$property
 
             if ("$refValue" -ne "$difValue") {
-                [pscustomobject]@{
+
+                $row = [ordered]@{
                     ObjectType      = $ObjectType
                     Section         = if ($ref.Section) { $ref.Section } else { $dif.Section }
                     SettingCategory = if ($ref.SettingCategory) { $ref.SettingCategory } else { $dif.SettingCategory }
@@ -238,12 +256,16 @@ function Compare-ObjectSet {
                     DifferenceType  = "Changed"
                     SettingKey      = $key
                     Property        = $property
-                    ReferenceValue  = $refValue
-                    DifferenceValue = $difValue
                 }
+
+                $row[$referenceValueColumn]  = $refValue
+                $row[$differenceValueColumn] = $difValue
+
+                [pscustomobject]$row
             }
             elseif ($IncludeSame) {
-                [pscustomobject]@{
+
+                $row = [ordered]@{
                     ObjectType      = $ObjectType
                     Section         = if ($ref.Section) { $ref.Section } else { $dif.Section }
                     SettingCategory = if ($ref.SettingCategory) { $ref.SettingCategory } else { $dif.SettingCategory }
@@ -251,9 +273,12 @@ function Compare-ObjectSet {
                     DifferenceType  = "Same"
                     SettingKey      = $key
                     Property        = $property
-                    ReferenceValue  = $refValue
-                    DifferenceValue = $difValue
                 }
+
+                $row[$referenceValueColumn]  = $refValue
+                $row[$differenceValueColumn] = $difValue
+
+                [pscustomobject]$row
             }
         }
     }
@@ -264,13 +289,18 @@ Clear-Host
 $Gpo1 = Get-GpoExtractedObjects -Path "C:\Temp\GPO_Comparison\GPO_Comparison_GPO1.xml"
 $Gpo2 = Get-GpoExtractedObjects -Path "C:\Temp\GPO_Comparison\GPO_Comparison_GPO2.xml"
 
+$Gpo1ValueColumn = "$($Gpo1.Name) Value"
+$Gpo2ValueColumn = "$($Gpo2.Name) Value"
+
 $AllDifferences = @(
     Compare-ObjectSet `
         -ReferenceObject $Gpo1.UserRights `
         -DifferenceObject $Gpo2.UserRights `
         -KeyScript { param($x) "$($x.Section)\$($x.Name)" } `
         -CompareProperties @("Member") `
-        -ObjectType "UserRights"
+        -ObjectType "UserRights" `
+        -ReferenceGpoName $Gpo1.Name `
+        -DifferenceGpoName $Gpo2.Name
 
     Compare-ObjectSet `
         -ReferenceObject $Gpo1.SecurityOptions `
@@ -297,14 +327,18 @@ $AllDifferences = @(
             "SettingValue",
             "SystemAccessPolicyName"
         ) `
-        -ObjectType "SecurityOptions"
+        -ObjectType "SecurityOptions" `
+        -ReferenceGpoName $Gpo1.Name `
+        -DifferenceGpoName $Gpo2.Name
 
     Compare-ObjectSet `
         -ReferenceObject $Gpo1.PolicySettings `
         -DifferenceObject $Gpo2.PolicySettings `
         -KeyScript { param($x) "$($x.Section)\$($x.Category)\$($x.Name)" } `
         -CompareProperties @("State") `
-        -ObjectType "PolicySettings"
+        -ObjectType "PolicySettings" `
+        -ReferenceGpoName $Gpo1.Name `
+        -DifferenceGpoName $Gpo2.Name
 
     Compare-ObjectSet `
         -ReferenceObject $Gpo1.RegistrySettings `
@@ -316,18 +350,26 @@ $AllDifferences = @(
             "Value",
             "RemovePolicy"
         ) `
-        -ObjectType "RegistrySettings"
+        -ObjectType "RegistrySettings" `
+        -ReferenceGpoName $Gpo1.Name `
+        -DifferenceGpoName $Gpo2.Name
+)
+
+$OutputColumns = @(
+    "SettingCategory",
+    "SettingType",
+    "Section",
+    "DifferenceType",
+    "SettingKey",
+    "Property",
+    $Gpo1ValueColumn,
+    $Gpo2ValueColumn
 )
 
 $AllDifferences |
     Sort-Object SettingCategory, SettingType, Section, SettingKey, Property |
-    Format-Table `
-        SettingCategory,
-        SettingType,
-        Section,
-        DifferenceType,
-        SettingKey,
-        Property,
-        ReferenceValue,
-        DifferenceValue `
-        -AutoSize
+    Format-Table $OutputColumns -AutoSize
+
+$AllDifferences |
+    Sort-Object SettingCategory, SettingType, Section, SettingKey, Property |
+    Export-Csv "C:\Temp\GPO_Comparison\GPO_Differences.csv" -NoTypeInformation -Encoding UTF8
