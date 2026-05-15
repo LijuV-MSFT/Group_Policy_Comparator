@@ -13,11 +13,11 @@ function Get-GpoExtractedObjects {
     $AllPolicySettings = @()
     $AllRegistrySettings = @()
 
-    foreach ($sectionName in @("Computer", "User")) {
+    foreach ($PolicyScopeName in @("Computer", "User")) {
 
-        $sectionNode = $GPOXMLData.GPO.$sectionName
+        $PolicyScopeNode = $GPOXMLData.GPO.$PolicyScopeName
 
-        foreach ($extension in @($sectionNode.ExtensionData)) {
+        foreach ($extension in @($PolicyScopeNode.ExtensionData)) {
 
             switch ($extension.Name) {
 
@@ -25,7 +25,7 @@ function Get-GpoExtractedObjects {
 
                     $UserRights = foreach ($right in @($extension.Extension.UserRightsAssignment)) {
                         [pscustomobject]@{
-                            Section         = $sectionName
+                            PolicyScope         = $PolicyScopeName
                             SettingCategory = "Security settings"
                             SettingType     = "User Rights"
                             Name            = $right.Name
@@ -67,7 +67,7 @@ function Get-GpoExtractedObjects {
                         }
 
                         [pscustomobject]@{
-                            Section                = $sectionName
+                            PolicyScope                = $PolicyScopeName
                             SettingCategory        = "Security settings"
                             SettingType            = "Security options"
                             Name                   = $display.Name
@@ -87,7 +87,7 @@ function Get-GpoExtractedObjects {
 
                     $PolicySettings = foreach ($policy in @($extension.Extension.Policy)) {
                         [pscustomobject]@{
-                            Section         = $sectionName
+                            PolicyScope         = $PolicyScopeName
                             SettingCategory = "Administrative Templates"
                             SettingType     = "Registry settings"
                             Name            = $policy.Name
@@ -105,7 +105,7 @@ function Get-GpoExtractedObjects {
 
                     $RegistrySettings = foreach ($registry in @($extension.Extension.RegistrySettings.Registry)) {
                         [pscustomobject]@{
-                            Section         = $sectionName
+                            PolicyScope         = $PolicyScopeName
                             SettingCategory = "Preferences"
                             SettingType     = "Registry settings"
                             Name            = $registry.name
@@ -201,7 +201,7 @@ function Compare-ObjectSet {
 
                 $row = [ordered]@{
                     ObjectType      = $ObjectType
-                    Section         = $dif.Section
+                    PolicyScope         = $dif.PolicyScope
                     SettingCategory = $dif.SettingCategory
                     SettingType     = $dif.SettingType
                     DifferenceType  = "Added"
@@ -224,7 +224,7 @@ function Compare-ObjectSet {
 
                 $row = [ordered]@{
                     ObjectType      = $ObjectType
-                    Section         = $ref.Section
+                    PolicyScope         = $ref.PolicyScope
                     SettingCategory = $ref.SettingCategory
                     SettingType     = $ref.SettingType
                     DifferenceType  = "Removed"
@@ -250,7 +250,7 @@ function Compare-ObjectSet {
 
                 $row = [ordered]@{
                     ObjectType      = $ObjectType
-                    Section         = if ($ref.Section) { $ref.Section } else { $dif.Section }
+                    PolicyScope         = if ($ref.PolicyScope) { $ref.PolicyScope } else { $dif.PolicyScope }
                     SettingCategory = if ($ref.SettingCategory) { $ref.SettingCategory } else { $dif.SettingCategory }
                     SettingType     = if ($ref.SettingType) { $ref.SettingType } else { $dif.SettingType }
                     DifferenceType  = "Changed"
@@ -267,7 +267,7 @@ function Compare-ObjectSet {
 
                 $row = [ordered]@{
                     ObjectType      = $ObjectType
-                    Section         = if ($ref.Section) { $ref.Section } else { $dif.Section }
+                    PolicyScope         = if ($ref.PolicyScope) { $ref.PolicyScope } else { $dif.PolicyScope }
                     SettingCategory = if ($ref.SettingCategory) { $ref.SettingCategory } else { $dif.SettingCategory }
                     SettingType     = if ($ref.SettingType) { $ref.SettingType } else { $dif.SettingType }
                     DifferenceType  = "Same"
@@ -296,7 +296,7 @@ $AllDifferences = @(
     Compare-ObjectSet `
         -ReferenceObject $Gpo1.UserRights `
         -DifferenceObject $Gpo2.UserRights `
-        -KeyScript { param($x) "$($x.Section)\$($x.Name)" } `
+        -KeyScript { param($x) "$($x.PolicyScope)\$($x.Name)" } `
         -CompareProperties @("Member") `
         -ObjectType "UserRights" `
         -ReferenceGpoName $Gpo1.Name `
@@ -318,7 +318,7 @@ $AllDifferences = @(
                 $x.Name
             }
 
-            "$($x.Section)\$identity"
+            "$($x.PolicyScope)\$identity"
         } `
         -CompareProperties @(
             "Name",
@@ -334,7 +334,7 @@ $AllDifferences = @(
     Compare-ObjectSet `
         -ReferenceObject $Gpo1.PolicySettings `
         -DifferenceObject $Gpo2.PolicySettings `
-        -KeyScript { param($x) "$($x.Section)\$($x.Category)\$($x.Name)" } `
+        -KeyScript { param($x) "$($x.PolicyScope)\$($x.Category)\$($x.Name)" } `
         -CompareProperties @("State") `
         -ObjectType "PolicySettings" `
         -ReferenceGpoName $Gpo1.Name `
@@ -343,7 +343,7 @@ $AllDifferences = @(
     Compare-ObjectSet `
         -ReferenceObject $Gpo1.RegistrySettings `
         -DifferenceObject $Gpo2.RegistrySettings `
-        -KeyScript { param($x) "$($x.Section)\$($x.Hive)\$($x.Key)\$($x.ValueName)" } `
+        -KeyScript { param($x) "$($x.PolicyScope)\$($x.Hive)\$($x.Key)\$($x.ValueName)" } `
         -CompareProperties @(
             "Action",
             "Type",
@@ -356,20 +356,21 @@ $AllDifferences = @(
 )
 
 $OutputColumns = @(
+    "PolicyScope",
     "SettingCategory",
     "SettingType",
-    "Section",
-    "DifferenceType",
     "SettingKey",
     "Property",
+    "DifferenceType",
     $Gpo1ValueColumn,
     $Gpo2ValueColumn
 )
 
 $AllDifferences |
-    Sort-Object SettingCategory, SettingType, Section, SettingKey, Property |
+    Sort-Object PolicyScope, SettingCategory, SettingType, SettingKey, Property  |
     Format-Table $OutputColumns -AutoSize
+    
 
 $AllDifferences |
-    Sort-Object SettingCategory, SettingType, Section, SettingKey, Property |
+    Sort-Object PolicyScope, SettingCategory, SettingType, SettingKey, Property |
     Export-Csv "C:\Temp\GPO_Comparison\GPO_Differences.csv" -NoTypeInformation -Encoding UTF8
