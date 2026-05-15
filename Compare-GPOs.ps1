@@ -155,19 +155,16 @@ function Compare-ObjectSet {
         [string]$ObjectType,
 
         [Parameter(Mandatory)]
-        [string]$ReferenceGpoName,
+        [string]$Gpo1ValueColumn,
 
         [Parameter(Mandatory)]
-        [string]$DifferenceGpoName,
+        [string]$Gpo2ValueColumn,
 
         [switch]$IncludeSame
     )
 
     $ReferenceObject  = @($ReferenceObject)
     $DifferenceObject = @($DifferenceObject)
-
-    $referenceValueColumn  = "$ReferenceGpoName Value"
-    $differenceValueColumn = "$DifferenceGpoName Value"
 
     $refHash = @{}
     $difHash = @{}
@@ -200,17 +197,17 @@ function Compare-ObjectSet {
             foreach ($property in $CompareProperties) {
 
                 $row = [ordered]@{
-                    ObjectType      = $ObjectType
-                    PolicyScope         = $dif.PolicyScope
+                    PolicyScope     = $dif.PolicyScope
                     SettingCategory = $dif.SettingCategory
                     SettingType     = $dif.SettingType
-                    DifferenceType  = "Added"
                     SettingKey      = $key
                     Property        = $property
+                    DifferenceType  = "Added"
                 }
 
-                $row[$referenceValueColumn]  = $null
-                $row[$differenceValueColumn] = $dif.$property
+                $row[$Gpo1ValueColumn] = $null
+                $row[$Gpo2ValueColumn] = $dif.$property
+                $row["ObjectType"]     = $ObjectType
 
                 [pscustomobject]$row
             }
@@ -223,17 +220,17 @@ function Compare-ObjectSet {
             foreach ($property in $CompareProperties) {
 
                 $row = [ordered]@{
-                    ObjectType      = $ObjectType
-                    PolicyScope         = $ref.PolicyScope
+                    PolicyScope     = $ref.PolicyScope
                     SettingCategory = $ref.SettingCategory
                     SettingType     = $ref.SettingType
-                    DifferenceType  = "Removed"
                     SettingKey      = $key
                     Property        = $property
+                    DifferenceType  = "Removed"
                 }
 
-                $row[$referenceValueColumn]  = $ref.$property
-                $row[$differenceValueColumn] = $null
+                $row[$Gpo1ValueColumn] = $ref.$property
+                $row[$Gpo2ValueColumn] = $null
+                $row["ObjectType"]     = $ObjectType
 
                 [pscustomobject]$row
             }
@@ -249,34 +246,34 @@ function Compare-ObjectSet {
             if ("$refValue" -ne "$difValue") {
 
                 $row = [ordered]@{
-                    ObjectType      = $ObjectType
-                    PolicyScope         = if ($ref.PolicyScope) { $ref.PolicyScope } else { $dif.PolicyScope }
+                    PolicyScope     = if ($ref.PolicyScope) { $ref.PolicyScope } else { $dif.PolicyScope }
                     SettingCategory = if ($ref.SettingCategory) { $ref.SettingCategory } else { $dif.SettingCategory }
                     SettingType     = if ($ref.SettingType) { $ref.SettingType } else { $dif.SettingType }
-                    DifferenceType  = "Changed"
                     SettingKey      = $key
                     Property        = $property
+                    DifferenceType  = "Changed"
                 }
 
-                $row[$referenceValueColumn]  = $refValue
-                $row[$differenceValueColumn] = $difValue
+                $row[$Gpo1ValueColumn] = $refValue
+                $row[$Gpo2ValueColumn] = $difValue
+                $row["ObjectType"]     = $ObjectType
 
                 [pscustomobject]$row
             }
             elseif ($IncludeSame) {
 
                 $row = [ordered]@{
-                    ObjectType      = $ObjectType
-                    PolicyScope         = if ($ref.PolicyScope) { $ref.PolicyScope } else { $dif.PolicyScope }
+                    PolicyScope     = if ($ref.PolicyScope) { $ref.PolicyScope } else { $dif.PolicyScope }
                     SettingCategory = if ($ref.SettingCategory) { $ref.SettingCategory } else { $dif.SettingCategory }
                     SettingType     = if ($ref.SettingType) { $ref.SettingType } else { $dif.SettingType }
-                    DifferenceType  = "Same"
                     SettingKey      = $key
                     Property        = $property
+                    DifferenceType  = "Same"
                 }
 
-                $row[$referenceValueColumn]  = $refValue
-                $row[$differenceValueColumn] = $difValue
+                $row[$Gpo1ValueColumn] = $refValue
+                $row[$Gpo2ValueColumn] = $difValue
+                $row["ObjectType"]     = $ObjectType
 
                 [pscustomobject]$row
             }
@@ -299,8 +296,8 @@ $AllDifferences = @(
         -KeyScript { param($x) "$($x.PolicyScope)\$($x.Name)" } `
         -CompareProperties @("Member") `
         -ObjectType "UserRights" `
-        -ReferenceGpoName $Gpo1.Name `
-        -DifferenceGpoName $Gpo2.Name
+        -Gpo1ValueColumn $Gpo1ValueColumn `
+        -Gpo2ValueColumn $Gpo2ValueColumn
 
     Compare-ObjectSet `
         -ReferenceObject $Gpo1.SecurityOptions `
@@ -328,8 +325,8 @@ $AllDifferences = @(
             "SystemAccessPolicyName"
         ) `
         -ObjectType "SecurityOptions" `
-        -ReferenceGpoName $Gpo1.Name `
-        -DifferenceGpoName $Gpo2.Name
+        -Gpo1ValueColumn $Gpo1ValueColumn `
+        -Gpo2ValueColumn $Gpo2ValueColumn
 
     Compare-ObjectSet `
         -ReferenceObject $Gpo1.PolicySettings `
@@ -337,8 +334,8 @@ $AllDifferences = @(
         -KeyScript { param($x) "$($x.PolicyScope)\$($x.Category)\$($x.Name)" } `
         -CompareProperties @("State") `
         -ObjectType "PolicySettings" `
-        -ReferenceGpoName $Gpo1.Name `
-        -DifferenceGpoName $Gpo2.Name
+        -Gpo1ValueColumn $Gpo1ValueColumn `
+        -Gpo2ValueColumn $Gpo2ValueColumn
 
     Compare-ObjectSet `
         -ReferenceObject $Gpo1.RegistrySettings `
@@ -351,9 +348,10 @@ $AllDifferences = @(
             "RemovePolicy"
         ) `
         -ObjectType "RegistrySettings" `
-        -ReferenceGpoName $Gpo1.Name `
-        -DifferenceGpoName $Gpo2.Name
+        -Gpo1ValueColumn $Gpo1ValueColumn `
+        -Gpo2ValueColumn $Gpo2ValueColumn
 )
+
 
 $OutputColumns = @(
     "PolicyScope",
