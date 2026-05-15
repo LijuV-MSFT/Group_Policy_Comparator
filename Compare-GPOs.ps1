@@ -70,7 +70,10 @@ function Get-GpoExtractedObjects {
                             PolicyScope                = $PolicyScopeName
                             SettingCategory        = "Security settings"
                             SettingType            = "Security options"
-                            Name                   = $display.Name
+                            Name                   = if ($display.Name) {$display.Name}
+                                                     elseif ($setting.KeyName) {Split-Path -Path $setting.KeyName -Leaf}
+                                                     elseif ($setting.SystemAccessPolicyName) {$setting.SystemAccessPolicyName}
+                                                     else {$null}
                             Units                  = $display.Units
                             DisplayValue           = $displayValue
                             KeyName                = $setting.KeyName
@@ -192,6 +195,26 @@ function Compare-ObjectSet {
         $ref = $refHash[$key]
         $dif = $difHash[$key]
 
+        # Use whichever object exists to populate metadata columns.
+        $metadataSource = if ($dif) { $dif } else { $ref }
+
+        $settingName = if ($metadataSource.Name) {
+            $metadataSource.Name
+        }
+        elseif ($metadataSource.ValueName) {
+            $metadataSource.ValueName
+        }
+        else {
+            $null
+        }
+
+        $displayValue = if ($metadataSource.DisplayValue) {
+            $metadataSource.DisplayValue
+        }
+        else {
+            $null
+        }
+
         if (-not $ref) {
 
             foreach ($property in $CompareProperties) {
@@ -200,7 +223,9 @@ function Compare-ObjectSet {
                     PolicyScope     = $dif.PolicyScope
                     SettingCategory = $dif.SettingCategory
                     SettingType     = $dif.SettingType
+                    SettingName     = $settingName
                     SettingKey      = $key
+                    DisplayValue    = $displayValue
                     Property        = $property
                     DifferenceType  = "Added"
                 }
@@ -223,7 +248,9 @@ function Compare-ObjectSet {
                     PolicyScope     = $ref.PolicyScope
                     SettingCategory = $ref.SettingCategory
                     SettingType     = $ref.SettingType
+                    SettingName     = $settingName
                     SettingKey      = $key
+                    DisplayValue    = $displayValue
                     Property        = $property
                     DifferenceType  = "Removed"
                 }
@@ -249,7 +276,9 @@ function Compare-ObjectSet {
                     PolicyScope     = if ($ref.PolicyScope) { $ref.PolicyScope } else { $dif.PolicyScope }
                     SettingCategory = if ($ref.SettingCategory) { $ref.SettingCategory } else { $dif.SettingCategory }
                     SettingType     = if ($ref.SettingType) { $ref.SettingType } else { $dif.SettingType }
+                    SettingName     = $settingName
                     SettingKey      = $key
+                    DisplayValue    = $displayValue
                     Property        = $property
                     DifferenceType  = "Changed"
                 }
@@ -266,7 +295,9 @@ function Compare-ObjectSet {
                     PolicyScope     = if ($ref.PolicyScope) { $ref.PolicyScope } else { $dif.PolicyScope }
                     SettingCategory = if ($ref.SettingCategory) { $ref.SettingCategory } else { $dif.SettingCategory }
                     SettingType     = if ($ref.SettingType) { $ref.SettingType } else { $dif.SettingType }
+                    SettingName     = $settingName
                     SettingKey      = $key
+                    DisplayValue    = $displayValue
                     Property        = $property
                     DifferenceType  = "Same"
                 }
@@ -293,54 +324,53 @@ $AllDifferences = @(
     Compare-ObjectSet `
         -ReferenceObject $Gpo1.UserRights `
         -DifferenceObject $Gpo2.UserRights `
-        -KeyScript { param($x) "$($x.PolicyScope)\$($x.Name)" } `
+        -KeyScript { param($x) "$($x.Name)" } `
         -CompareProperties @("Member") `
         -ObjectType "UserRights" `
         -Gpo1ValueColumn $Gpo1ValueColumn `
-        -Gpo2ValueColumn $Gpo2ValueColumn
+        -Gpo2ValueColumn $Gpo2ValueColumn `
+        -IncludeSame
 
-    Compare-ObjectSet `
-        -ReferenceObject $Gpo1.SecurityOptions `
-        -DifferenceObject $Gpo2.SecurityOptions `
-        -KeyScript {
-            param($x)
+Compare-ObjectSet `
+    -ReferenceObject $Gpo1.SecurityOptions `
+    -DifferenceObject $Gpo2.SecurityOptions `
+    -KeyScript {
+        param($x)
 
-            $identity = if ($x.KeyName) {
-                $x.KeyName
-            }
-            elseif ($x.SystemAccessPolicyName) {
-                $x.SystemAccessPolicyName
-            }
-            else {
-                $x.Name
-            }
+        $identity = if ($x.KeyName) {
+            $x.KeyName
+        }
+        elseif ($x.SystemAccessPolicyName) {
+            $x.SystemAccessPolicyName
+        }
+        else {
+            $x.Name
+        }
 
-            "$($x.PolicyScope)\$identity"
-        } `
-        -CompareProperties @(
-            "Name",
-            "Units",
-            "DisplayValue",
-            "SettingValue",
-            "SystemAccessPolicyName"
-        ) `
-        -ObjectType "SecurityOptions" `
-        -Gpo1ValueColumn $Gpo1ValueColumn `
-        -Gpo2ValueColumn $Gpo2ValueColumn
+        "$identity"
+    } `
+    -CompareProperties @(
+        "SettingValue"
+    ) `
+    -ObjectType "SecurityOptions" `
+    -Gpo1ValueColumn $Gpo1ValueColumn `
+    -Gpo2ValueColumn $Gpo2ValueColumn `
+    -IncludeSame
 
     Compare-ObjectSet `
         -ReferenceObject $Gpo1.PolicySettings `
         -DifferenceObject $Gpo2.PolicySettings `
-        -KeyScript { param($x) "$($x.PolicyScope)\$($x.Category)\$($x.Name)" } `
+        -KeyScript { param($x) "$($x.Category)\$($x.Name)" } `
         -CompareProperties @("State") `
         -ObjectType "PolicySettings" `
         -Gpo1ValueColumn $Gpo1ValueColumn `
-        -Gpo2ValueColumn $Gpo2ValueColumn
+        -Gpo2ValueColumn $Gpo2ValueColumn `
+        -IncludeSame
 
     Compare-ObjectSet `
         -ReferenceObject $Gpo1.RegistrySettings `
         -DifferenceObject $Gpo2.RegistrySettings `
-        -KeyScript { param($x) "$($x.PolicyScope)\$($x.Hive)\$($x.Key)\$($x.ValueName)" } `
+        -KeyScript { param($x) "$($x.Hive)\$($x.Key)\$($x.ValueName)" } `
         -CompareProperties @(
             "Action",
             "Type",
@@ -349,7 +379,8 @@ $AllDifferences = @(
         ) `
         -ObjectType "RegistrySettings" `
         -Gpo1ValueColumn $Gpo1ValueColumn `
-        -Gpo2ValueColumn $Gpo2ValueColumn
+        -Gpo2ValueColumn $Gpo2ValueColumn `
+        -IncludeSame
 )
 
 
@@ -357,7 +388,9 @@ $OutputColumns = @(
     "PolicyScope",
     "SettingCategory",
     "SettingType",
+    "SettingName",
     "SettingKey",
+    "DisplayValue",
     "Property",
     "DifferenceType",
     $Gpo1ValueColumn,
@@ -365,10 +398,11 @@ $OutputColumns = @(
 )
 
 $AllDifferences |
-    Sort-Object PolicyScope, SettingCategory, SettingType, SettingKey, Property  |
+    Sort-Object PolicyScope, SettingCategory, SettingType, SettingKey, Property |
     Format-Table $OutputColumns -AutoSize
     
 
 $AllDifferences |
     Sort-Object PolicyScope, SettingCategory, SettingType, SettingKey, Property |
+    Select-Object $OutputColumns |
     Export-Csv "C:\Temp\GPO_Comparison\GPO_Differences.csv" -NoTypeInformation -Encoding UTF8
