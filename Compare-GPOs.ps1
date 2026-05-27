@@ -1,19 +1,26 @@
 <#
 .SYNOPSIS
-Compares two GPO XML reports and exports CSV and HTML difference reports.
+Compares two GPO backup folders by reading their gpreport.xml files and exports CSV and HTML difference reports.
+
+.DESCRIPTION
+This script contains the core comparison engine for Group Policy backup comparison.
+
+It can be dot-sourced from a UI script:
+
+    . .\Compare-GPOs.ps1
+
+Then called with:
+
+    Invoke-GpoComparison `
+        -Gpo1BackupFolder "C:\GPOBackups\GPO1" `
+        -Gpo2BackupFolder "C:\GPOBackups\GPO2" `
+        -OutputFolder "C:\Temp\GPO_Comparison" `
+        -IncludeSame
 
 .NOTES
-Generate XML first, for example:
-
-Get-GPOReport -Name "GPO_Comparison_GPO1" -ReportType Xml -Path "C:\Temp\GPO_Comparison\GPO_Comparison_GPO1.xml"
-Get-GPOReport -Name "GPO_Comparison_GPO2" -ReportType Xml -Path "C:\Temp\GPO_Comparison\GPO_Comparison_GPO2.xml"
+Expected input:
+- Each selected GPO backup folder should contain, or contain beneath it, a gpreport.xml file.
 #>
-
-$Gpo1Path = "C:\Temp\GPO_Comparison\GPO_Comparison_GPO1.xml"
-$Gpo2Path = "C:\Temp\GPO_Comparison\GPO_Comparison_GPO2.xml"
-
-$CsvOutputPath  = "C:\Temp\GPO_Comparison\GPO_Differences.csv"
-$HtmlOutputPath = "C:\Temp\GPO_Comparison\GPO_Differences.html"
 
 function Get-PolicyScopeSortOrder {
     param([string]$PolicyScope)
@@ -68,14 +75,14 @@ function Get-SettingTypeSortOrder {
 
     if ($SettingCategory -eq "Security Settings") {
         switch ($SettingType) {
-            "Account policies"              { 1 }
-            "Audit policy"                  { 2 }
-            "Advanced Audit Configuration"  { 3 }
-            "User Rights"                   { 4 }
-            "Security options"              { 5 }
-            "Event Log"                     { 6 }
-            "Restricted Groups"             { 7 }
-            default                         { 99 }
+            "Account policies"             { 1 }
+            "Audit policy"                 { 2 }
+            "Advanced Audit Configuration" { 3 }
+            "User Rights"                  { 4 }
+            "Security options"             { 5 }
+            "Event Log"                    { 6 }
+            "Restricted Groups"            { 7 }
+            default                        { 99 }
         }
     }
     else {
@@ -134,6 +141,35 @@ function ConvertTo-AdvancedAuditDisplayValue {
         "3" { "Success and Failure" }
         default { $SettingValue }
     }
+}
+
+function Resolve-GpoReportXmlPath {
+    param(
+        [Parameter(Mandatory)]
+        [string]$FolderPath
+    )
+
+    if (-not (Test-Path -LiteralPath $FolderPath -PathType Container)) {
+        throw "Folder does not exist: $FolderPath"
+    }
+
+    $directPath = Join-Path $FolderPath "gpreport.xml"
+
+    if (Test-Path -LiteralPath $directPath -PathType Leaf) {
+        return $directPath
+    }
+
+    $matches = @(Get-ChildItem -LiteralPath $FolderPath -Recurse -Filter "gpreport.xml" -File -ErrorAction SilentlyContinue)
+
+    if ($matches.Count -eq 0) {
+        throw "No gpreport.xml file found under: $FolderPath"
+    }
+
+    if ($matches.Count -gt 1) {
+        throw "Multiple gpreport.xml files found under: $FolderPath. Select the specific GPO backup folder that contains the gpreport.xml file."
+    }
+
+    return $matches[0].FullName
 }
 
 function Get-GpoExtractedObjects {
@@ -325,7 +361,6 @@ function Get-GpoExtractedObjects {
                 "Advanced Audit Configuration" {
 
                     $AdvancedAuditSettings = foreach ($auditSetting in @($extension.Extension.AuditSetting)) {
-
                         [pscustomobject]@{
                             PolicyScope     = $PolicyScopeName
                             PolicyContainer = "Policies"
@@ -389,17 +424,17 @@ function Get-GpoExtractedObjects {
     }
 
     [pscustomobject]@{
-        Name                   = $GPOName
-        Scripts                = $AllScripts
-        AccountPolicies        = $AllAccountPolicies
-        AuditPolicies          = $AllAuditPolicies
-        AdvancedAuditSettings  = $AllAdvancedAuditSettings
-        UserRights             = $AllUserRights
-        SecurityOptions        = $AllSecurityOptions
-        EventLogSettings       = $AllEventLogSettings
-        RestrictedGroups       = $AllRestrictedGroups
-        PolicySettings         = $AllPolicySettings
-        RegistrySettings       = $AllRegistrySettings
+        Name                  = $GPOName
+        Scripts               = $AllScripts
+        AccountPolicies       = $AllAccountPolicies
+        AuditPolicies         = $AllAuditPolicies
+        AdvancedAuditSettings = $AllAdvancedAuditSettings
+        UserRights            = $AllUserRights
+        SecurityOptions       = $AllSecurityOptions
+        EventLogSettings      = $AllEventLogSettings
+        RestrictedGroups      = $AllRestrictedGroups
+        PolicySettings        = $AllPolicySettings
+        RegistrySettings      = $AllRegistrySettings
     }
 }
 
@@ -970,196 +1005,187 @@ td {
     $html.ToString() | Set-Content -LiteralPath $Path -Encoding UTF8
 }
 
-Clear-Host
+function Invoke-GpoComparison {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Gpo1BackupFolder,
 
-$Gpo1 = Get-GpoExtractedObjects -Path "C:\Temp\GPO_Comparison\GPO_Comparison_GPO1.xml"
-$Gpo2 = Get-GpoExtractedObjects -Path "C:\Temp\GPO_Comparison\GPO_Comparison_GPO2.xml"
+        [Parameter(Mandatory)]
+        [string]$Gpo2BackupFolder,
 
-$Gpo1ValueColumn = "$($Gpo1.Name) Value"
-$Gpo2ValueColumn = "$($Gpo2.Name) Value"
+        [Parameter(Mandatory)]
+        [string]$OutputFolder,
 
-$AllDifferences = @(
+        [switch]$IncludeSame
+    )
 
-    Compare-ObjectSet `
-        -ReferenceObject $Gpo1.Scripts `
-        -DifferenceObject $Gpo2.Scripts `
-        -KeyScript { param($x) "$($x.Type)\$($x.Order)\$($x.Command)" } `
-        -CompareProperties @(
-            "Command",
-            "Type",
-            "Order",
-            "RunOrder"
-        ) `
-        -ObjectType "Scripts" `
-        -Gpo1ValueColumn $Gpo1ValueColumn `
-        -Gpo2ValueColumn $Gpo2ValueColumn `
-        -IncludeSame
+    if (-not (Test-Path -LiteralPath $OutputFolder -PathType Container)) {
+        New-Item -Path $OutputFolder -ItemType Directory -Force | Out-Null
+    }
 
-    Compare-ObjectSet `
-        -ReferenceObject $Gpo1.AccountPolicies `
-        -DifferenceObject $Gpo2.AccountPolicies `
-        -KeyScript { param($x) "$($x.Type)\$($x.Name)" } `
-        -CompareProperties @(
-            "SettingValue"
-        ) `
-        -ObjectType "AccountPolicies" `
-        -Gpo1ValueColumn $Gpo1ValueColumn `
-        -Gpo2ValueColumn $Gpo2ValueColumn `
-        -IncludeSame
+    $Gpo1Path = Resolve-GpoReportXmlPath -FolderPath $Gpo1BackupFolder
+    $Gpo2Path = Resolve-GpoReportXmlPath -FolderPath $Gpo2BackupFolder
 
-    Compare-ObjectSet `
-        -ReferenceObject $Gpo1.AuditPolicies `
-        -DifferenceObject $Gpo2.AuditPolicies `
-        -KeyScript { param($x) "$($x.Name)" } `
-        -CompareProperties @(
-            "SuccessAttempts",
-            "FailureAttempts"
-        ) `
-        -ObjectType "AuditPolicies" `
-        -Gpo1ValueColumn $Gpo1ValueColumn `
-        -Gpo2ValueColumn $Gpo2ValueColumn `
-        -IncludeSame
+    $Gpo1 = Get-GpoExtractedObjects -Path $Gpo1Path
+    $Gpo2 = Get-GpoExtractedObjects -Path $Gpo2Path
 
-    Compare-ObjectSet `
-        -ReferenceObject $Gpo1.AdvancedAuditSettings `
-        -DifferenceObject $Gpo2.AdvancedAuditSettings `
-        -KeyScript { param($x) "$($x.PolicyTarget)\$($x.SubcategoryName)" } `
-        -CompareProperties @(
-            "SettingValue"
-        ) `
-        -ObjectType "AdvancedAuditSettings" `
-        -Gpo1ValueColumn $Gpo1ValueColumn `
-        -Gpo2ValueColumn $Gpo2ValueColumn `
-        -IncludeSame
+    $Gpo1ValueColumn = "$($Gpo1.Name) Value"
+    $Gpo2ValueColumn = "$($Gpo2.Name) Value"
 
-    Compare-ObjectSet `
-        -ReferenceObject $Gpo1.UserRights `
-        -DifferenceObject $Gpo2.UserRights `
-        -KeyScript { param($x) "$($x.Name)" } `
-        -CompareProperties @(
-            "Member"
-        ) `
-        -ObjectType "UserRights" `
-        -Gpo1ValueColumn $Gpo1ValueColumn `
-        -Gpo2ValueColumn $Gpo2ValueColumn `
-        -IncludeSame
+    $commonCompareParameters = @{
+        Gpo1ValueColumn = $Gpo1ValueColumn
+        Gpo2ValueColumn = $Gpo2ValueColumn
+    }
 
-    Compare-ObjectSet `
-        -ReferenceObject $Gpo1.SecurityOptions `
-        -DifferenceObject $Gpo2.SecurityOptions `
-        -KeyScript {
-            param($x)
+    if ($IncludeSame) {
+        $commonCompareParameters.IncludeSame = $true
+    }
 
-            $identity = if ($x.KeyName) {
-                $x.KeyName
-            }
-            elseif ($x.SystemAccessPolicyName) {
-                $x.SystemAccessPolicyName
-            }
-            else {
-                $x.Name
-            }
+    $AllDifferences = @(
 
-            "$identity"
-        } `
-        -CompareProperties @(
-            "SettingValue"
-        ) `
-        -ObjectType "SecurityOptions" `
-        -Gpo1ValueColumn $Gpo1ValueColumn `
-        -Gpo2ValueColumn $Gpo2ValueColumn `
-        -IncludeSame
+        Compare-ObjectSet `
+            -ReferenceObject $Gpo1.Scripts `
+            -DifferenceObject $Gpo2.Scripts `
+            -KeyScript { param($x) "$($x.Type)\$($x.Order)\$($x.Command)" } `
+            -CompareProperties @("Command", "Type", "Order", "RunOrder") `
+            -ObjectType "Scripts" `
+            @commonCompareParameters
 
-    Compare-ObjectSet `
-        -ReferenceObject $Gpo1.EventLogSettings `
-        -DifferenceObject $Gpo2.EventLogSettings `
-        -KeyScript { param($x) "$($x.Log)\$($x.Name)" } `
-        -CompareProperties @(
-            "SettingValue"
-        ) `
-        -ObjectType "EventLogSettings" `
-        -Gpo1ValueColumn $Gpo1ValueColumn `
-        -Gpo2ValueColumn $Gpo2ValueColumn `
-        -IncludeSame
+        Compare-ObjectSet `
+            -ReferenceObject $Gpo1.AccountPolicies `
+            -DifferenceObject $Gpo2.AccountPolicies `
+            -KeyScript { param($x) "$($x.Type)\$($x.Name)" } `
+            -CompareProperties @("SettingValue") `
+            -ObjectType "AccountPolicies" `
+            @commonCompareParameters
 
-    Compare-ObjectSet `
-        -ReferenceObject $Gpo1.RestrictedGroups `
-        -DifferenceObject $Gpo2.RestrictedGroups `
-        -KeyScript { param($x) "$($x.Name)" } `
-        -CompareProperties @(
-            "Member",
-            "MemberOf"
-        ) `
-        -ObjectType "RestrictedGroups" `
-        -Gpo1ValueColumn $Gpo1ValueColumn `
-        -Gpo2ValueColumn $Gpo2ValueColumn `
-        -IncludeSame
+        Compare-ObjectSet `
+            -ReferenceObject $Gpo1.AuditPolicies `
+            -DifferenceObject $Gpo2.AuditPolicies `
+            -KeyScript { param($x) "$($x.Name)" } `
+            -CompareProperties @("SuccessAttempts", "FailureAttempts") `
+            -ObjectType "AuditPolicies" `
+            @commonCompareParameters
 
-    Compare-ObjectSet `
-        -ReferenceObject $Gpo1.PolicySettings `
-        -DifferenceObject $Gpo2.PolicySettings `
-        -KeyScript { param($x) "$($x.Category)\$($x.Name)" } `
-        -CompareProperties @(
-            "State"
-        ) `
-        -ObjectType "PolicySettings" `
-        -Gpo1ValueColumn $Gpo1ValueColumn `
-        -Gpo2ValueColumn $Gpo2ValueColumn `
-        -IncludeSame
+        Compare-ObjectSet `
+            -ReferenceObject $Gpo1.AdvancedAuditSettings `
+            -DifferenceObject $Gpo2.AdvancedAuditSettings `
+            -KeyScript { param($x) "$($x.PolicyTarget)\$($x.SubcategoryName)" } `
+            -CompareProperties @("SettingValue") `
+            -ObjectType "AdvancedAuditSettings" `
+            @commonCompareParameters
 
-    Compare-ObjectSet `
-        -ReferenceObject $Gpo1.RegistrySettings `
-        -DifferenceObject $Gpo2.RegistrySettings `
-        -KeyScript { param($x) "$($x.Hive)\$($x.Key)\$($x.ValueName)" } `
-        -CompareProperties @(
-            "Action",
-            "Type",
-            "Value",
-            "RemovePolicy"
-        ) `
-        -ObjectType "RegistrySettings" `
-        -Gpo1ValueColumn $Gpo1ValueColumn `
-        -Gpo2ValueColumn $Gpo2ValueColumn `
-        -IncludeSame
-)
+        Compare-ObjectSet `
+            -ReferenceObject $Gpo1.UserRights `
+            -DifferenceObject $Gpo2.UserRights `
+            -KeyScript { param($x) "$($x.Name)" } `
+            -CompareProperties @("Member") `
+            -ObjectType "UserRights" `
+            @commonCompareParameters
 
-$OutputColumns = @(
-    "PolicyScope",
-    "PolicyContainer",
-    "SettingCategory",
-    "SettingType",
-    "SettingName",
-    "Path",
-    "DisplayValue",
-    "Property",
-    "DifferenceType",
-    $Gpo1ValueColumn,
-    $Gpo2ValueColumn
-)
+        Compare-ObjectSet `
+            -ReferenceObject $Gpo1.SecurityOptions `
+            -DifferenceObject $Gpo2.SecurityOptions `
+            -KeyScript {
+                param($x)
 
-$SortedDifferences = $AllDifferences |
-    Sort-Object `
-        PolicyScopeSortOrder,
-        PolicyContainerSortOrder,
-        SettingCategorySortOrder,
-        SettingTypeSortOrder,
-        SettingType,
-        Path,
-        Property
+                $identity = if ($x.KeyName) {
+                    $x.KeyName
+                }
+                elseif ($x.SystemAccessPolicyName) {
+                    $x.SystemAccessPolicyName
+                }
+                else {
+                    $x.Name
+                }
 
-$SortedDifferences |
-    Format-Table $OutputColumns -AutoSize
+                "$identity"
+            } `
+            -CompareProperties @("SettingValue") `
+            -ObjectType "SecurityOptions" `
+            @commonCompareParameters
 
-$SortedDifferences |
-    Select-Object $OutputColumns |
-    Export-Csv "C:\Temp\GPO_Comparison\GPO_Differences.csv" -NoTypeInformation -Encoding UTF8
+        Compare-ObjectSet `
+            -ReferenceObject $Gpo1.EventLogSettings `
+            -DifferenceObject $Gpo2.EventLogSettings `
+            -KeyScript { param($x) "$($x.Log)\$($x.Name)" } `
+            -CompareProperties @("SettingValue") `
+            -ObjectType "EventLogSettings" `
+            @commonCompareParameters
 
-Export-GpoDifferenceHtml `
-    -Differences $SortedDifferences `
-    -Columns $OutputColumns `
-    -Gpo1Name $Gpo1.Name `
-    -Gpo2Name $Gpo2.Name `
-    -Path "C:\Temp\GPO_Comparison\GPO_Differences.html"
+        Compare-ObjectSet `
+            -ReferenceObject $Gpo1.RestrictedGroups `
+            -DifferenceObject $Gpo2.RestrictedGroups `
+            -KeyScript { param($x) "$($x.Name)" } `
+            -CompareProperties @("Member", "MemberOf") `
+            -ObjectType "RestrictedGroups" `
+            @commonCompareParameters
 
-Write-Host "CSV exported to:  C:\Temp\GPO_Comparison\GPO_Differences.csv" -ForegroundColor Green
-Write-Host "HTML exported to: C:\Temp\GPO_Comparison\GPO_Differences.html" -ForegroundColor Green
+        Compare-ObjectSet `
+            -ReferenceObject $Gpo1.PolicySettings `
+            -DifferenceObject $Gpo2.PolicySettings `
+            -KeyScript { param($x) "$($x.Category)\$($x.Name)" } `
+            -CompareProperties @("State") `
+            -ObjectType "PolicySettings" `
+            @commonCompareParameters
+
+        Compare-ObjectSet `
+            -ReferenceObject $Gpo1.RegistrySettings `
+            -DifferenceObject $Gpo2.RegistrySettings `
+            -KeyScript { param($x) "$($x.Hive)\$($x.Key)\$($x.ValueName)" } `
+            -CompareProperties @("Action", "Type", "Value", "RemovePolicy") `
+            -ObjectType "RegistrySettings" `
+            @commonCompareParameters
+    )
+
+    $OutputColumns = @(
+        "PolicyScope",
+        "PolicyContainer",
+        "SettingCategory",
+        "SettingType",
+        "SettingName",
+        "Path",
+        "DisplayValue",
+        "Property",
+        "DifferenceType",
+        $Gpo1ValueColumn,
+        $Gpo2ValueColumn
+    )
+
+    $SortedDifferences = $AllDifferences |
+        Sort-Object `
+            PolicyScopeSortOrder,
+            PolicyContainerSortOrder,
+            SettingCategorySortOrder,
+            SettingTypeSortOrder,
+            SettingType,
+            Path,
+            Property
+
+    $safeGpo1Name = $Gpo1.Name -replace '[\\/:*?"<>|]', '_'
+    $safeGpo2Name = $Gpo2.Name -replace '[\\/:*?"<>|]', '_'
+
+    $CsvOutputPath  = Join-Path $OutputFolder "$safeGpo1Name-vs-$safeGpo2Name-GPO_Differences.csv"
+    $HtmlOutputPath = Join-Path $OutputFolder "$safeGpo1Name-vs-$safeGpo2Name-GPO_Differences.html"
+
+    $SortedDifferences |
+        Select-Object $OutputColumns |
+        Export-Csv $CsvOutputPath -NoTypeInformation -Encoding UTF8
+
+    Export-GpoDifferenceHtml `
+        -Differences $SortedDifferences `
+        -Columns $OutputColumns `
+        -Gpo1Name $Gpo1.Name `
+        -Gpo2Name $Gpo2.Name `
+        -Path $HtmlOutputPath
+
+    [pscustomobject]@{
+        Gpo1Name       = $Gpo1.Name
+        Gpo2Name       = $Gpo2.Name
+        Gpo1XmlPath    = $Gpo1Path
+        Gpo2XmlPath    = $Gpo2Path
+        CsvOutputPath  = $CsvOutputPath
+        HtmlOutputPath = $HtmlOutputPath
+        Differences    = $SortedDifferences
+    }
+}
