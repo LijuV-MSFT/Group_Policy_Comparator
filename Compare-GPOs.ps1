@@ -1,3 +1,141 @@
+<#
+.SYNOPSIS
+Compares two GPO XML reports and exports CSV and HTML difference reports.
+
+.NOTES
+Generate XML first, for example:
+
+Get-GPOReport -Name "GPO_Comparison_GPO1" -ReportType Xml -Path "C:\Temp\GPO_Comparison\GPO_Comparison_GPO1.xml"
+Get-GPOReport -Name "GPO_Comparison_GPO2" -ReportType Xml -Path "C:\Temp\GPO_Comparison\GPO_Comparison_GPO2.xml"
+#>
+
+$Gpo1Path = "C:\Temp\GPO_Comparison\GPO_Comparison_GPO1.xml"
+$Gpo2Path = "C:\Temp\GPO_Comparison\GPO_Comparison_GPO2.xml"
+
+$CsvOutputPath  = "C:\Temp\GPO_Comparison\GPO_Differences.csv"
+$HtmlOutputPath = "C:\Temp\GPO_Comparison\GPO_Differences.html"
+
+function Get-PolicyScopeSortOrder {
+    param([string]$PolicyScope)
+
+    switch ($PolicyScope) {
+        "Computer" { 1 }
+        "User"     { 2 }
+        default    { 99 }
+    }
+}
+
+function Get-PolicyContainerSortOrder {
+    param([string]$PolicyContainer)
+
+    switch ($PolicyContainer) {
+        "Policies"    { 1 }
+        "Preferences" { 2 }
+        default       { 99 }
+    }
+}
+
+function Get-SettingCategorySortOrder {
+    param(
+        [string]$PolicyContainer,
+        [string]$SettingCategory
+    )
+
+    if ($PolicyContainer -eq "Policies") {
+        switch ($SettingCategory) {
+            "Scripts"                  { 1 }
+            "Security Settings"        { 2 }
+            "Administrative Templates" { 3 }
+            default                    { 99 }
+        }
+    }
+    elseif ($PolicyContainer -eq "Preferences") {
+        switch ($SettingCategory) {
+            "Registry Settings" { 1 }
+            default             { 99 }
+        }
+    }
+    else {
+        99
+    }
+}
+
+function Get-SettingTypeSortOrder {
+    param(
+        [string]$SettingCategory,
+        [string]$SettingType
+    )
+
+    if ($SettingCategory -eq "Security Settings") {
+        switch ($SettingType) {
+            "Account policies"              { 1 }
+            "Audit policy"                  { 2 }
+            "Advanced Audit Configuration"  { 3 }
+            "User Rights"                   { 4 }
+            "Security options"              { 5 }
+            "Event Log"                     { 6 }
+            "Restricted Groups"             { 7 }
+            default                         { 99 }
+        }
+    }
+    else {
+        99
+    }
+}
+
+function Get-FirstSettingValue {
+    param(
+        $Object
+    )
+
+    if ($null -ne $Object.SettingString -and $Object.SettingString -ne "") {
+        return $Object.SettingString
+    }
+
+    if ($null -ne $Object.SettingNumber -and $Object.SettingNumber -ne "") {
+        return $Object.SettingNumber
+    }
+
+    if ($null -ne $Object.SettingBoolean -and $Object.SettingBoolean -ne "") {
+        return $Object.SettingBoolean
+    }
+
+    return $null
+}
+
+function ConvertTo-SemicolonList {
+    param(
+        [AllowNull()]
+        $InputObject,
+
+        [Parameter(Mandatory)]
+        [scriptblock]$ValueScript
+    )
+
+    @(
+        $InputObject | ForEach-Object {
+            & $ValueScript $_
+        } | Where-Object {
+            $_
+        } | Sort-Object
+    ) -join ';'
+}
+
+function ConvertTo-AdvancedAuditDisplayValue {
+    param(
+        [AllowNull()]
+        [object]$SettingValue
+    )
+
+    switch ("$SettingValue") {
+        "0" { "No Auditing" }
+        "1" { "Success" }
+        "2" { "Failure" }
+        "3" { "Success and Failure" }
+        default { $SettingValue }
+    }
+}
+
 function Get-GpoExtractedObjects {
     param(
         [Parameter(Mandatory)]
@@ -12,6 +150,7 @@ function Get-GpoExtractedObjects {
 
     $AllAccountPolicies = @()
     $AllAuditPolicies = @()
+    $AllAdvancedAuditSettings = @()
     $AllUserRights = @()
     $AllSecurityOptions = @()
     $AllEventLogSettings = @()
@@ -33,8 +172,9 @@ function Get-GpoExtractedObjects {
                     $Scripts = foreach ($script in @($extension.Extension.Script)) {
                         [pscustomobject]@{
                             PolicyScope     = $PolicyScopeName
-                            SettingCategory = "Windows Settings"
-                            SettingType     = "Scripts"
+                            PolicyContainer = "Policies"
+                            SettingCategory = "Scripts"
+                            SettingType     = $script.Type
                             Name            = $script.Command
                             Command         = $script.Command
                             Type            = $script.Type
@@ -48,43 +188,23 @@ function Get-GpoExtractedObjects {
 
                 "Security" {
 
-                    ###############################
-                    # Account Policies           #
-                    ###############################
-
                     $AccountPolicies = foreach ($account in @($extension.Extension.Account)) {
-
-                        $settingValue = if ($null -ne $account.SettingBoolean -and $account.SettingBoolean -ne "") {
-                            $account.SettingBoolean
-                        }
-                        elseif ($null -ne $account.SettingNumber -and $account.SettingNumber -ne "") {
-                            $account.SettingNumber
-                        }
-                        elseif ($null -ne $account.SettingString -and $account.SettingString -ne "") {
-                            $account.SettingString
-                        }
-                        else {
-                            $null
-                        }
-
                         [pscustomobject]@{
                             PolicyScope     = $PolicyScopeName
-                            SettingCategory = "Security settings"
+                            PolicyContainer = "Policies"
+                            SettingCategory = "Security Settings"
                             SettingType     = "Account policies"
                             Name            = $account.Name
                             Type            = $account.Type
-                            SettingValue    = $settingValue
+                            SettingValue    = Get-FirstSettingValue -Object $account
                         }
                     }
-
-                    ###############################
-                    # Audit Policy               #
-                    ###############################
 
                     $AuditPolicies = foreach ($audit in @($extension.Extension.Audit)) {
                         [pscustomobject]@{
                             PolicyScope     = $PolicyScopeName
-                            SettingCategory = "Security settings"
+                            PolicyContainer = "Policies"
+                            SettingCategory = "Security Settings"
                             SettingType     = "Audit policy"
                             Name            = $audit.Name
                             SuccessAttempts = $audit.SuccessAttempts
@@ -92,29 +212,19 @@ function Get-GpoExtractedObjects {
                         }
                     }
 
-                    ###############################
-                    # User Rights Assignment     #
-                    ###############################
-
                     $UserRights = foreach ($right in @($extension.Extension.UserRightsAssignment)) {
                         [pscustomobject]@{
                             PolicyScope     = $PolicyScopeName
-                            SettingCategory = "Security settings"
+                            PolicyContainer = "Policies"
+                            SettingCategory = "Security Settings"
                             SettingType     = "User Rights"
                             Name            = $right.Name
-                            Member          = @(
-                                $right.Member | ForEach-Object {
-                                    $_.SID.'#text'
-                                } | Where-Object {
-                                    $_
-                                } | Sort-Object
-                            ) -join ';'
+                            Member          = ConvertTo-SemicolonList -InputObject $right.Member -ValueScript {
+                                param($x)
+                                $x.SID.'#text'
+                            }
                         }
                     }
-
-                    ###############################
-                    # Security Options           #
-                    ###############################
 
                     $SecurityOptions = foreach ($setting in @($extension.Extension.SecurityOptions)) {
 
@@ -140,19 +250,6 @@ function Get-GpoExtractedObjects {
                             $null
                         }
 
-                        $settingValue = if ($null -ne $setting.SettingString -and $setting.SettingString -ne "") {
-                            $setting.SettingString
-                        }
-                        elseif ($null -ne $setting.SettingNumber -and $setting.SettingNumber -ne "") {
-                            $setting.SettingNumber
-                        }
-                        elseif ($null -ne $setting.SettingBoolean -and $setting.SettingBoolean -ne "") {
-                            $setting.SettingBoolean
-                        }
-                        else {
-                            $null
-                        }
-
                         $friendlyName = if ($display.Name) {
                             $display.Name
                         }
@@ -168,73 +265,48 @@ function Get-GpoExtractedObjects {
 
                         [pscustomobject]@{
                             PolicyScope            = $PolicyScopeName
-                            SettingCategory        = "Security settings"
+                            PolicyContainer        = "Policies"
+                            SettingCategory        = "Security Settings"
                             SettingType            = "Security options"
                             Name                   = $friendlyName
                             Units                  = $display.Units
                             DisplayValue           = $displayValue
                             KeyName                = $setting.KeyName
-                            SettingValue           = $settingValue
+                            SettingValue           = Get-FirstSettingValue -Object $setting
                             SystemAccessPolicyName = $setting.SystemAccessPolicyName
                         }
                     }
 
-                    ###############################
-                    # Event Log                  #
-                    ###############################
-
                     $EventLogSettings = foreach ($eventLog in @($extension.Extension.EventLog)) {
-
-                        $settingValue = if ($null -ne $eventLog.SettingNumber -and $eventLog.SettingNumber -ne "") {
-                            $eventLog.SettingNumber
-                        }
-                        elseif ($null -ne $eventLog.SettingBoolean -and $eventLog.SettingBoolean -ne "") {
-                            $eventLog.SettingBoolean
-                        }
-                        elseif ($null -ne $eventLog.SettingString -and $eventLog.SettingString -ne "") {
-                            $eventLog.SettingString
-                        }
-                        else {
-                            $null
-                        }
-
                         [pscustomobject]@{
                             PolicyScope     = $PolicyScopeName
-                            SettingCategory = "Security settings"
+                            PolicyContainer = "Policies"
+                            SettingCategory = "Security Settings"
                             SettingType     = "Event Log"
                             Name            = $eventLog.Name
                             Log             = $eventLog.Log
-                            SettingValue    = $settingValue
+                            SettingValue    = Get-FirstSettingValue -Object $eventLog
                         }
                     }
-
-                    ###############################
-                    # Restricted Groups          #
-                    ###############################
 
                     $RestrictedGroups = foreach ($group in @($extension.Extension.RestrictedGroups)) {
 
                         $groupName = $group.GroupName.Name.'#text'
 
-                        $members = @(
-                            $group.Member | ForEach-Object {
-                                $_.Name.'#text'
-                            } | Where-Object {
-                                $_
-                            } | Sort-Object
-                        ) -join ';'
+                        $members = ConvertTo-SemicolonList -InputObject $group.Member -ValueScript {
+                            param($x)
+                            $x.Name.'#text'
+                        }
 
-                        $memberOf = @(
-                            $group.Memberof | ForEach-Object {
-                                $_.Name.'#text'
-                            } | Where-Object {
-                                $_
-                            } | Sort-Object
-                        ) -join ';'
+                        $memberOf = ConvertTo-SemicolonList -InputObject $group.Memberof -ValueScript {
+                            param($x)
+                            $x.Name.'#text'
+                        }
 
                         [pscustomobject]@{
                             PolicyScope     = $PolicyScopeName
-                            SettingCategory = "Security settings"
+                            PolicyContainer = "Policies"
+                            SettingCategory = "Security Settings"
                             SettingType     = "Restricted Groups"
                             Name            = $groupName
                             Member          = $members
@@ -250,11 +322,33 @@ function Get-GpoExtractedObjects {
                     $AllRestrictedGroups += $RestrictedGroups
                 }
 
+                "Advanced Audit Configuration" {
+
+                    $AdvancedAuditSettings = foreach ($auditSetting in @($extension.Extension.AuditSetting)) {
+
+                        [pscustomobject]@{
+                            PolicyScope     = $PolicyScopeName
+                            PolicyContainer = "Policies"
+                            SettingCategory = "Security Settings"
+                            SettingType     = "Advanced Audit Configuration"
+                            Name            = $auditSetting.SubcategoryName
+                            PolicyTarget    = $auditSetting.PolicyTarget
+                            SubcategoryName = $auditSetting.SubcategoryName
+                            SubcategoryGuid = $auditSetting.SubcategoryGuid
+                            SettingValue    = $auditSetting.SettingValue
+                            DisplayValue    = ConvertTo-AdvancedAuditDisplayValue -SettingValue $auditSetting.SettingValue
+                        }
+                    }
+
+                    $AllAdvancedAuditSettings += $AdvancedAuditSettings
+                }
+
                 "Registry" {
 
                     $PolicySettings = foreach ($policy in @($extension.Extension.Policy)) {
                         [pscustomobject]@{
                             PolicyScope     = $PolicyScopeName
+                            PolicyContainer = "Policies"
                             SettingCategory = "Administrative Templates"
                             SettingType     = "Registry settings"
                             Name            = $policy.Name
@@ -273,7 +367,8 @@ function Get-GpoExtractedObjects {
                     $RegistrySettings = foreach ($registry in @($extension.Extension.RegistrySettings.Registry)) {
                         [pscustomobject]@{
                             PolicyScope     = $PolicyScopeName
-                            SettingCategory = "Preferences"
+                            PolicyContainer = "Preferences"
+                            SettingCategory = "Registry Settings"
                             SettingType     = "Registry settings"
                             Name            = $registry.name
                             GPOSettingOrder = $registry.GPOSettingOrder
@@ -294,16 +389,17 @@ function Get-GpoExtractedObjects {
     }
 
     [pscustomobject]@{
-        Name              = $GPOName
-        Scripts           = $AllScripts
-        AccountPolicies   = $AllAccountPolicies
-        AuditPolicies     = $AllAuditPolicies
-        UserRights        = $AllUserRights
-        SecurityOptions   = $AllSecurityOptions
-        EventLogSettings  = $AllEventLogSettings
-        RestrictedGroups  = $AllRestrictedGroups
-        PolicySettings    = $AllPolicySettings
-        RegistrySettings  = $AllRegistrySettings
+        Name                   = $GPOName
+        Scripts                = $AllScripts
+        AccountPolicies        = $AllAccountPolicies
+        AuditPolicies          = $AllAuditPolicies
+        AdvancedAuditSettings  = $AllAdvancedAuditSettings
+        UserRights             = $AllUserRights
+        SecurityOptions        = $AllSecurityOptions
+        EventLogSettings       = $AllEventLogSettings
+        RestrictedGroups       = $AllRestrictedGroups
+        PolicySettings         = $AllPolicySettings
+        RegistrySettings       = $AllRegistrySettings
     }
 }
 
@@ -388,14 +484,19 @@ function Compare-ObjectSet {
             foreach ($property in $CompareProperties) {
 
                 $row = [ordered]@{
-                    PolicyScope     = $dif.PolicyScope
-                    SettingCategory = $dif.SettingCategory
-                    SettingType     = $dif.SettingType
-                    SettingName     = $settingName
-                    Setting         = $key
-                    DisplayValue    = $displayValue
-                    Property        = $property
-                    DifferenceType  = "Added"
+                    PolicyScope              = $dif.PolicyScope
+                    PolicyContainer          = $dif.PolicyContainer
+                    SettingCategory          = $dif.SettingCategory
+                    SettingType              = $dif.SettingType
+                    SettingName              = $settingName
+                    Path                     = $key
+                    DisplayValue             = $displayValue
+                    Property                 = $property
+                    DifferenceType           = "Added"
+                    PolicyScopeSortOrder     = Get-PolicyScopeSortOrder -PolicyScope $dif.PolicyScope
+                    PolicyContainerSortOrder = Get-PolicyContainerSortOrder -PolicyContainer $dif.PolicyContainer
+                    SettingCategorySortOrder = Get-SettingCategorySortOrder -PolicyContainer $dif.PolicyContainer -SettingCategory $dif.SettingCategory
+                    SettingTypeSortOrder     = Get-SettingTypeSortOrder -SettingCategory $dif.SettingCategory -SettingType $dif.SettingType
                 }
 
                 $row[$Gpo1ValueColumn] = $null
@@ -413,14 +514,19 @@ function Compare-ObjectSet {
             foreach ($property in $CompareProperties) {
 
                 $row = [ordered]@{
-                    PolicyScope     = $ref.PolicyScope
-                    SettingCategory = $ref.SettingCategory
-                    SettingType     = $ref.SettingType
-                    SettingName     = $settingName
-                    Setting         = $key
-                    DisplayValue    = $displayValue
-                    Property        = $property
-                    DifferenceType  = "Removed"
+                    PolicyScope              = $ref.PolicyScope
+                    PolicyContainer          = $ref.PolicyContainer
+                    SettingCategory          = $ref.SettingCategory
+                    SettingType              = $ref.SettingType
+                    SettingName              = $settingName
+                    Path                     = $key
+                    DisplayValue             = $displayValue
+                    Property                 = $property
+                    DifferenceType           = "Removed"
+                    PolicyScopeSortOrder     = Get-PolicyScopeSortOrder -PolicyScope $ref.PolicyScope
+                    PolicyContainerSortOrder = Get-PolicyContainerSortOrder -PolicyContainer $ref.PolicyContainer
+                    SettingCategorySortOrder = Get-SettingCategorySortOrder -PolicyContainer $ref.PolicyContainer -SettingCategory $ref.SettingCategory
+                    SettingTypeSortOrder     = Get-SettingTypeSortOrder -SettingCategory $ref.SettingCategory -SettingType $ref.SettingType
                 }
 
                 $row[$Gpo1ValueColumn] = $ref.$property
@@ -437,18 +543,24 @@ function Compare-ObjectSet {
 
             $refValue = $ref.$property
             $difValue = $dif.$property
+            $reportSource = if ($ref) { $ref } else { $dif }
 
             if ("$refValue" -ne "$difValue") {
 
                 $row = [ordered]@{
-                    PolicyScope     = if ($ref.PolicyScope) { $ref.PolicyScope } else { $dif.PolicyScope }
-                    SettingCategory = if ($ref.SettingCategory) { $ref.SettingCategory } else { $dif.SettingCategory }
-                    SettingType     = if ($ref.SettingType) { $ref.SettingType } else { $dif.SettingType }
-                    SettingName     = $settingName
-                    Setting         = $key
-                    DisplayValue    = $displayValue
-                    Property        = $property
-                    DifferenceType  = "Changed"
+                    PolicyScope              = $reportSource.PolicyScope
+                    PolicyContainer          = $reportSource.PolicyContainer
+                    SettingCategory          = $reportSource.SettingCategory
+                    SettingType              = $reportSource.SettingType
+                    SettingName              = $settingName
+                    Path                     = $key
+                    DisplayValue             = $displayValue
+                    Property                 = $property
+                    DifferenceType           = "Changed"
+                    PolicyScopeSortOrder     = Get-PolicyScopeSortOrder -PolicyScope $reportSource.PolicyScope
+                    PolicyContainerSortOrder = Get-PolicyContainerSortOrder -PolicyContainer $reportSource.PolicyContainer
+                    SettingCategorySortOrder = Get-SettingCategorySortOrder -PolicyContainer $reportSource.PolicyContainer -SettingCategory $reportSource.SettingCategory
+                    SettingTypeSortOrder     = Get-SettingTypeSortOrder -SettingCategory $reportSource.SettingCategory -SettingType $reportSource.SettingType
                 }
 
                 $row[$Gpo1ValueColumn] = $refValue
@@ -460,14 +572,19 @@ function Compare-ObjectSet {
             elseif ($IncludeSame) {
 
                 $row = [ordered]@{
-                    PolicyScope     = if ($ref.PolicyScope) { $ref.PolicyScope } else { $dif.PolicyScope }
-                    SettingCategory = if ($ref.SettingCategory) { $ref.SettingCategory } else { $dif.SettingCategory }
-                    SettingType     = if ($ref.SettingType) { $ref.SettingType } else { $dif.SettingType }
-                    SettingName     = $settingName
-                    Setting         = $key
-                    DisplayValue    = $displayValue
-                    Property        = $property
-                    DifferenceType  = "Same"
+                    PolicyScope              = $reportSource.PolicyScope
+                    PolicyContainer          = $reportSource.PolicyContainer
+                    SettingCategory          = $reportSource.SettingCategory
+                    SettingType              = $reportSource.SettingType
+                    SettingName              = $settingName
+                    Path                     = $key
+                    DisplayValue             = $displayValue
+                    Property                 = $property
+                    DifferenceType           = "Same"
+                    PolicyScopeSortOrder     = Get-PolicyScopeSortOrder -PolicyScope $reportSource.PolicyScope
+                    PolicyContainerSortOrder = Get-PolicyContainerSortOrder -PolicyContainer $reportSource.PolicyContainer
+                    SettingCategorySortOrder = Get-SettingCategorySortOrder -PolicyContainer $reportSource.PolicyContainer -SettingCategory $reportSource.SettingCategory
+                    SettingTypeSortOrder     = Get-SettingTypeSortOrder -SettingCategory $reportSource.SettingCategory -SettingType $reportSource.SettingType
                 }
 
                 $row[$Gpo1ValueColumn] = $refValue
@@ -478,6 +595,379 @@ function Compare-ObjectSet {
             }
         }
     }
+}
+
+function ConvertTo-HtmlEncodedText {
+    param(
+        [AllowNull()]
+        [object]$Value
+    )
+
+    if ($null -eq $Value) {
+        return ""
+    }
+
+    [System.Net.WebUtility]::HtmlEncode([string]$Value)
+}
+
+function Get-DifferenceCssClass {
+    param(
+        [string]$DifferenceType
+    )
+
+    switch ($DifferenceType) {
+        "Added"   { "diff-added" }
+        "Removed" { "diff-removed" }
+        "Changed" { "diff-changed" }
+        "Same"    { "diff-same" }
+        default   { "diff-same" }
+    }
+}
+
+function Get-DifferencePrefix {
+    param(
+        [string]$DifferenceType
+    )
+
+    switch ($DifferenceType) {
+        "Added"   { "[+] " }
+        "Removed" { "[-] " }
+        "Changed" { "[#] " }
+        "Same"    { "" }
+        default   { "" }
+    }
+}
+
+function Export-GpoDifferenceHtml {
+    param(
+        [Parameter(Mandatory)]
+        [object[]]$Differences,
+
+        [Parameter(Mandatory)]
+        [string[]]$Columns,
+
+        [Parameter(Mandatory)]
+        [string]$Gpo1Name,
+
+        [Parameter(Mandatory)]
+        [string]$Gpo2Name,
+
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+
+    $generatedOn = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+
+    $totalCount   = @($Differences).Count
+    $addedCount   = @($Differences | Where-Object DifferenceType -eq "Added").Count
+    $removedCount = @($Differences | Where-Object DifferenceType -eq "Removed").Count
+    $changedCount = @($Differences | Where-Object DifferenceType -eq "Changed").Count
+    $sameCount    = @($Differences | Where-Object DifferenceType -eq "Same").Count
+
+    $html = New-Object System.Text.StringBuilder
+
+    [void]$html.AppendLine("<!DOCTYPE html>")
+    [void]$html.AppendLine("<html lang='en-US'>")
+    [void]$html.AppendLine("<head>")
+    [void]$html.AppendLine("<meta charset='utf-8'>")
+    [void]$html.AppendLine("<title>GPO Difference Report</title>")
+    [void]$html.AppendLine("<style>")
+    [void]$html.AppendLine(@"
+body {
+    background-color: #ffffff;
+    color: #000000;
+    font-family: 'Segoe UI', Arial, sans-serif;
+    font-size: 13px;
+    margin: 0;
+    padding: 0;
+}
+
+.header {
+    border-bottom: 1px solid #999999;
+    padding: 16px 20px;
+    background-color: #ffffff;
+}
+
+.header h1 {
+    margin: 0 0 8px 0;
+    color: #333333;
+    font-size: 22px;
+}
+
+.header .meta {
+    color: #333333;
+    line-height: 1.5em;
+}
+
+.summary {
+    display: flex;
+    gap: 12px;
+    padding: 12px 20px;
+    border-bottom: 1px solid #cccccc;
+    background: #f7f7f7;
+    flex-wrap: wrap;
+}
+
+.summary-card {
+    border: 1px solid #cccccc;
+    background: #ffffff;
+    padding: 8px 12px;
+    min-width: 130px;
+}
+
+.summary-card .number {
+    font-size: 20px;
+    font-weight: bold;
+}
+
+.summary-card .label {
+    color: #555555;
+}
+
+.legend {
+    padding: 10px 20px;
+    border-bottom: 1px solid #cccccc;
+}
+
+.legend span {
+    display: inline-block;
+    margin-right: 16px;
+    padding: 4px 8px;
+    border: 1px solid #bbbbbb;
+}
+
+.diff-added {
+    background-color: lightgreen;
+}
+
+.diff-removed {
+    background-color: salmon;
+}
+
+.diff-changed {
+    background-color: lightskyblue;
+}
+
+.diff-same {
+    background-color: #ffffff;
+}
+
+.scope {
+    margin: 12px 20px;
+    border: 1px solid #bbbbbb;
+}
+
+.scope > summary {
+    background-color: #fef7d6;
+    padding: 8px 10px;
+    font-weight: bold;
+    cursor: pointer;
+}
+
+.container {
+    margin: 8px 12px;
+    border: 1px solid #bbbbbb;
+}
+
+.container > summary {
+    background-color: #a0bacb;
+    padding: 8px 10px;
+    font-weight: bold;
+    cursor: pointer;
+}
+
+.category {
+    margin: 8px 12px;
+    border: 1px solid #bbbbbb;
+}
+
+.category > summary {
+    background-color: #c0d2de;
+    padding: 8px 10px;
+    font-weight: bold;
+    cursor: pointer;
+}
+
+.settingtype {
+    margin: 8px 12px;
+    border: 1px solid #bbbbbb;
+}
+
+.settingtype > summary {
+    background-color: #d9e3ea;
+    padding: 8px 10px;
+    font-weight: bold;
+    cursor: pointer;
+}
+
+table {
+    border-collapse: collapse;
+    table-layout: fixed;
+    width: 100%;
+    font-size: 12px;
+}
+
+th {
+    border-bottom: 1px solid #999999;
+    background: #e8e8e8;
+    text-align: left;
+    padding: 6px;
+}
+
+td {
+    border-bottom: 1px solid #dddddd;
+    padding: 6px;
+    vertical-align: top;
+    word-break: break-word;
+}
+
+.value-column {
+    font-family: Consolas, monospace;
+}
+
+.path-column {
+    font-family: Consolas, monospace;
+}
+
+.footer {
+    padding: 12px 20px;
+    color: #555555;
+    font-size: 12px;
+}
+"@)
+    [void]$html.AppendLine("</style>")
+    [void]$html.AppendLine("</head>")
+    [void]$html.AppendLine("<body>")
+
+    [void]$html.AppendLine("<div class='header'>")
+    [void]$html.AppendLine("<h1>GPO Difference Report</h1>")
+    [void]$html.AppendLine("<div class='meta'>")
+    [void]$html.AppendLine("<strong>Reference GPO:</strong> $(ConvertTo-HtmlEncodedText $Gpo1Name)<br>")
+    [void]$html.AppendLine("<strong>Comparison GPO:</strong> $(ConvertTo-HtmlEncodedText $Gpo2Name)<br>")
+    [void]$html.AppendLine("<strong>Generated:</strong> $(ConvertTo-HtmlEncodedText $generatedOn)")
+    [void]$html.AppendLine("</div>")
+    [void]$html.AppendLine("</div>")
+
+    [void]$html.AppendLine("<div class='summary'>")
+    [void]$html.AppendLine("<div class='summary-card'><div class='number'>$totalCount</div><div class='label'>Total rows</div></div>")
+    [void]$html.AppendLine("<div class='summary-card diff-added'><div class='number'>$addedCount</div><div class='label'>Added</div></div>")
+    [void]$html.AppendLine("<div class='summary-card diff-removed'><div class='number'>$removedCount</div><div class='label'>Removed</div></div>")
+    [void]$html.AppendLine("<div class='summary-card diff-changed'><div class='number'>$changedCount</div><div class='label'>Changed</div></div>")
+    [void]$html.AppendLine("<div class='summary-card diff-same'><div class='number'>$sameCount</div><div class='label'>Same</div></div>")
+    [void]$html.AppendLine("</div>")
+
+    [void]$html.AppendLine("<div class='legend'>")
+    [void]$html.AppendLine("<span class='diff-added'>[+] Added</span>")
+    [void]$html.AppendLine("<span class='diff-removed'>[-] Removed</span>")
+    [void]$html.AppendLine("<span class='diff-changed'>[#] Changed</span>")
+    [void]$html.AppendLine("<span class='diff-same'>Same</span>")
+    [void]$html.AppendLine("</div>")
+
+    $groupedByScope = $Differences |
+        Sort-Object `
+            PolicyScopeSortOrder,
+            PolicyContainerSortOrder,
+            SettingCategorySortOrder,
+            SettingTypeSortOrder,
+            SettingType,
+            Path,
+            Property |
+        Group-Object PolicyScope
+
+    foreach ($scopeGroup in $groupedByScope) {
+
+        [void]$html.AppendLine("<details class='scope' open>")
+        [void]$html.AppendLine("<summary>$(ConvertTo-HtmlEncodedText $scopeGroup.Name) Configuration</summary>")
+
+        $containerGroups = $scopeGroup.Group |
+            Sort-Object PolicyContainerSortOrder |
+            Group-Object PolicyContainer
+
+        foreach ($containerGroup in $containerGroups) {
+
+            [void]$html.AppendLine("<details class='container' open>")
+            [void]$html.AppendLine("<summary>$(ConvertTo-HtmlEncodedText $containerGroup.Name)</summary>")
+
+            $categoryGroups = $containerGroup.Group |
+                Sort-Object SettingCategorySortOrder |
+                Group-Object SettingCategory
+
+            foreach ($categoryGroup in $categoryGroups) {
+
+                [void]$html.AppendLine("<details class='category' open>")
+                [void]$html.AppendLine("<summary>$(ConvertTo-HtmlEncodedText $categoryGroup.Name)</summary>")
+
+                $typeGroups = $categoryGroup.Group |
+                    Sort-Object SettingTypeSortOrder, SettingType, Path, Property |
+                    Group-Object SettingType
+
+                foreach ($typeGroup in $typeGroups) {
+
+                    [void]$html.AppendLine("<details class='settingtype' open>")
+                    [void]$html.AppendLine("<summary>$(ConvertTo-HtmlEncodedText $typeGroup.Name)</summary>")
+
+                    [void]$html.AppendLine("<table>")
+                    [void]$html.AppendLine("<thead>")
+                    [void]$html.AppendLine("<tr>")
+
+                    foreach ($column in $Columns) {
+                        [void]$html.AppendLine("<th>$(ConvertTo-HtmlEncodedText $column)</th>")
+                    }
+
+                    [void]$html.AppendLine("</tr>")
+                    [void]$html.AppendLine("</thead>")
+                    [void]$html.AppendLine("<tbody>")
+
+                    foreach ($row in $typeGroup.Group) {
+
+                        $cssClass = Get-DifferenceCssClass -DifferenceType $row.DifferenceType
+                        $prefix = Get-DifferencePrefix -DifferenceType $row.DifferenceType
+
+                        [void]$html.AppendLine("<tr class='$cssClass'>")
+
+                        foreach ($column in $Columns) {
+
+                            $value = $row.PSObject.Properties[$column].Value
+
+                            if ($column -eq "DifferenceType") {
+                                $value = "$prefix$value"
+                            }
+
+                            $tdClass = if ($column -eq "Path") {
+                                "path-column"
+                            }
+                            elseif ($column -like "* Value") {
+                                "value-column"
+                            }
+                            else {
+                                ""
+                            }
+
+                            [void]$html.AppendLine("<td class='$tdClass'>$(ConvertTo-HtmlEncodedText $value)</td>")
+                        }
+
+                        [void]$html.AppendLine("</tr>")
+                    }
+
+                    [void]$html.AppendLine("</tbody>")
+                    [void]$html.AppendLine("</table>")
+                    [void]$html.AppendLine("</details>")
+                }
+
+                [void]$html.AppendLine("</details>")
+            }
+
+            [void]$html.AppendLine("</details>")
+        }
+
+        [void]$html.AppendLine("</details>")
+    }
+
+    [void]$html.AppendLine("<div class='footer'>Generated by Compare-GPOs.ps1</div>")
+    [void]$html.AppendLine("</body>")
+    [void]$html.AppendLine("</html>")
+
+    $html.ToString() | Set-Content -LiteralPath $Path -Encoding UTF8
 }
 
 Clear-Host
@@ -526,6 +1016,18 @@ $AllDifferences = @(
             "FailureAttempts"
         ) `
         -ObjectType "AuditPolicies" `
+        -Gpo1ValueColumn $Gpo1ValueColumn `
+        -Gpo2ValueColumn $Gpo2ValueColumn `
+        -IncludeSame
+
+    Compare-ObjectSet `
+        -ReferenceObject $Gpo1.AdvancedAuditSettings `
+        -DifferenceObject $Gpo2.AdvancedAuditSettings `
+        -KeyScript { param($x) "$($x.PolicyTarget)\$($x.SubcategoryName)" } `
+        -CompareProperties @(
+            "SettingValue"
+        ) `
+        -ObjectType "AdvancedAuditSettings" `
         -Gpo1ValueColumn $Gpo1ValueColumn `
         -Gpo2ValueColumn $Gpo2ValueColumn `
         -IncludeSame
@@ -623,10 +1125,11 @@ $AllDifferences = @(
 
 $OutputColumns = @(
     "PolicyScope",
+    "PolicyContainer",
     "SettingCategory",
     "SettingType",
     "SettingName",
-    "Setting",
+    "Path",
     "DisplayValue",
     "Property",
     "DifferenceType",
@@ -634,11 +1137,29 @@ $OutputColumns = @(
     $Gpo2ValueColumn
 )
 
-$AllDifferences |
-    Sort-Object PolicyScope, SettingCategory, SettingType, Setting, Property |
+$SortedDifferences = $AllDifferences |
+    Sort-Object `
+        PolicyScopeSortOrder,
+        PolicyContainerSortOrder,
+        SettingCategorySortOrder,
+        SettingTypeSortOrder,
+        SettingType,
+        Path,
+        Property
+
+$SortedDifferences |
     Format-Table $OutputColumns -AutoSize
 
-$AllDifferences |
-    Sort-Object PolicyScope, SettingCategory, SettingType, Setting, Property |
+$SortedDifferences |
     Select-Object $OutputColumns |
     Export-Csv "C:\Temp\GPO_Comparison\GPO_Differences.csv" -NoTypeInformation -Encoding UTF8
+
+Export-GpoDifferenceHtml `
+    -Differences $SortedDifferences `
+    -Columns $OutputColumns `
+    -Gpo1Name $Gpo1.Name `
+    -Gpo2Name $Gpo2.Name `
+    -Path "C:\Temp\GPO_Comparison\GPO_Differences.html"
+
+Write-Host "CSV exported to:  C:\Temp\GPO_Comparison\GPO_Differences.csv" -ForegroundColor Green
+Write-Host "HTML exported to: C:\Temp\GPO_Comparison\GPO_Differences.html" -ForegroundColor Green
