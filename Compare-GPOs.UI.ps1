@@ -1,5 +1,6 @@
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+Add-Type -AssemblyName System.Data
 
 $ErrorActionPreference = "Stop"
 
@@ -36,11 +37,179 @@ function Select-Folder {
     return $null
 }
 
+function Get-GridDisplayColumns {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Gpo1Name,
+
+        [Parameter(Mandatory)]
+        [string]$Gpo2Name
+    )
+
+    @(
+        "PolicyScope",
+        "PolicyContainer",
+        "SettingCategory",
+        "SettingType",
+        "SettingName",
+        "Path",
+        "DifferenceType",
+        "$Gpo1Name Value",
+        "$Gpo2Name Value"
+    )
+}
+
+function Convert-ObjectsToDataTable {
+    param(
+        [AllowNull()]
+        [object[]]$Rows,
+
+        [Parameter(Mandatory)]
+        [string[]]$Columns
+    )
+
+    $dataTable = New-Object System.Data.DataTable
+
+    foreach ($column in $Columns) {
+        [void]$dataTable.Columns.Add($column, [string])
+    }
+
+    foreach ($row in @($Rows)) {
+        $dataRow = $dataTable.NewRow()
+
+        foreach ($column in $Columns) {
+            $property = $row.PSObject.Properties[$column]
+
+            if ($property) {
+                $dataRow[$column] = [string]$property.Value
+            }
+            else {
+                $dataRow[$column] = ""
+            }
+        }
+
+        [void]$dataTable.Rows.Add($dataRow)
+    }
+
+    # Important: prevent PowerShell from enumerating the DataTable rows
+    return ,$dataTable
+}
+
+function Refresh-GridFromCsv {
+    if (-not $script:lastCsvPath -or -not (Test-Path -LiteralPath $script:lastCsvPath -PathType Leaf)) {
+        return
+    }
+
+    if (-not $script:gridDisplayColumns) {
+        return
+    }
+
+    $rows = @(Import-Csv -LiteralPath $script:lastCsvPath)
+
+    if ($checkOnlyShowDifferences.Checked) {
+        $rows = @($rows | Where-Object { $_.DifferenceType -ne "Same" })
+    }
+
+    [System.Data.DataTable]$dataTable = Convert-ObjectsToDataTable `
+        -Rows $rows `
+        -Columns $script:gridDisplayColumns
+
+    $grid.DataSource = $null
+    $grid.DataSource = $dataTable
+
+    $script:visibleRowCount = @($rows).Count
+
+    Format-Grid -Grid $grid
+    Apply-GridRowColors -Grid $grid
+    Update-SummaryLabel
+}
+
+function Format-Grid {
+    param(
+        [Parameter(Mandatory)]
+        [System.Windows.Forms.DataGridView]$Grid
+    )
+
+    $Grid.AutoGenerateColumns = $true
+    $Grid.AutoSizeColumnsMode = "DisplayedCells"
+    $Grid.AutoSizeRowsMode = "DisplayedCells"
+    $Grid.DefaultCellStyle.WrapMode = [System.Windows.Forms.DataGridViewTriState]::True
+    $Grid.ColumnHeadersDefaultCellStyle.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+    $Grid.RowHeadersVisible = $false
+
+    foreach ($column in $Grid.Columns) {
+        $column.SortMode = [System.Windows.Forms.DataGridViewColumnSortMode]::Automatic
+
+        if ($column.Name -like "* Value") {
+            $column.DefaultCellStyle.Font = New-Object System.Drawing.Font("Consolas", 9)
+        }
+
+        if ($column.Name -eq "Path") {
+            $column.DefaultCellStyle.Font = New-Object System.Drawing.Font("Consolas", 9)
+        }
+    }
+}
+
+function Apply-GridRowColors {
+    param(
+        [Parameter(Mandatory)]
+        [System.Windows.Forms.DataGridView]$Grid
+    )
+
+    if (-not $Grid.Columns.Contains("DifferenceType")) {
+        return
+    }
+
+    foreach ($row in $Grid.Rows) {
+        if ($row.IsNewRow) {
+            continue
+        }
+
+        $differenceType = [string]$row.Cells["DifferenceType"].Value
+
+        switch ($differenceType) {
+            "Added" {
+                $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::LightGreen
+            }
+            "Removed" {
+                $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::Salmon
+            }
+            "Changed" {
+                $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::LightSkyBlue
+            }
+            default {
+                $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::White
+            }
+        }
+    }
+}
+
+function Update-SummaryLabel {
+    if (-not $script:lastResult) {
+        return
+    }
+
+    $totalCount = @($script:lastResult.Differences).Count
+    $addedCount = @($script:lastResult.Differences | Where-Object DifferenceType -eq "Added").Count
+    $removedCount = @($script:lastResult.Differences | Where-Object DifferenceType -eq "Removed").Count
+    $changedCount = @($script:lastResult.Differences | Where-Object DifferenceType -eq "Changed").Count
+    $sameCount = @($script:lastResult.Differences | Where-Object DifferenceType -eq "Same").Count
+
+    $visibleCount = if ($null -ne $script:visibleRowCount) {
+        $script:visibleRowCount
+    }
+    else {
+        $totalCount
+    }
+
+    $summaryLabel.Text = "Compared '$($script:lastResult.Gpo1Name)' to '$($script:lastResult.Gpo2Name)' | Total: $totalCount | Visible: $visibleCount | Added: $addedCount | Removed: $removedCount | Changed: $changedCount | Same: $sameCount"
+}
+
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "Group Policy Comparator"
-$form.Size = New-Object System.Drawing.Size(1100, 720)
+$form.Size = New-Object System.Drawing.Size(1200, 780)
 $form.StartPosition = "CenterScreen"
-$form.MinimumSize = New-Object System.Drawing.Size(900, 600)
+$form.MinimumSize = New-Object System.Drawing.Size(1000, 650)
 
 $font = New-Object System.Drawing.Font("Segoe UI", 9)
 $form.Font = $font
@@ -52,12 +221,12 @@ $labelGpo1.Size = New-Object System.Drawing.Size(160, 22)
 
 $textGpo1 = New-Object System.Windows.Forms.TextBox
 $textGpo1.Location = New-Object System.Drawing.Point(180, 18)
-$textGpo1.Size = New-Object System.Drawing.Size(760, 24)
+$textGpo1.Size = New-Object System.Drawing.Size(870, 24)
 $textGpo1.Anchor = "Top,Left,Right"
 
 $buttonGpo1 = New-Object System.Windows.Forms.Button
 $buttonGpo1.Text = "Browse..."
-$buttonGpo1.Location = New-Object System.Drawing.Point(950, 16)
+$buttonGpo1.Location = New-Object System.Drawing.Point(1060, 16)
 $buttonGpo1.Size = New-Object System.Drawing.Size(110, 28)
 $buttonGpo1.Anchor = "Top,Right"
 
@@ -68,12 +237,12 @@ $labelGpo2.Size = New-Object System.Drawing.Size(160, 22)
 
 $textGpo2 = New-Object System.Windows.Forms.TextBox
 $textGpo2.Location = New-Object System.Drawing.Point(180, 58)
-$textGpo2.Size = New-Object System.Drawing.Size(760, 24)
+$textGpo2.Size = New-Object System.Drawing.Size(870, 24)
 $textGpo2.Anchor = "Top,Left,Right"
 
 $buttonGpo2 = New-Object System.Windows.Forms.Button
 $buttonGpo2.Text = "Browse..."
-$buttonGpo2.Location = New-Object System.Drawing.Point(950, 56)
+$buttonGpo2.Location = New-Object System.Drawing.Point(1060, 56)
 $buttonGpo2.Size = New-Object System.Drawing.Size(110, 28)
 $buttonGpo2.Anchor = "Top,Right"
 
@@ -84,21 +253,27 @@ $labelOutput.Size = New-Object System.Drawing.Size(160, 22)
 
 $textOutput = New-Object System.Windows.Forms.TextBox
 $textOutput.Location = New-Object System.Drawing.Point(180, 98)
-$textOutput.Size = New-Object System.Drawing.Size(760, 24)
+$textOutput.Size = New-Object System.Drawing.Size(870, 24)
 $textOutput.Anchor = "Top,Left,Right"
 $textOutput.Text = "C:\Temp\GPO_Comparison"
 
 $buttonOutput = New-Object System.Windows.Forms.Button
 $buttonOutput.Text = "Browse..."
-$buttonOutput.Location = New-Object System.Drawing.Point(950, 96)
+$buttonOutput.Location = New-Object System.Drawing.Point(1060, 96)
 $buttonOutput.Size = New-Object System.Drawing.Size(110, 28)
 $buttonOutput.Anchor = "Top,Right"
 
 $checkIncludeSame = New-Object System.Windows.Forms.CheckBox
-$checkIncludeSame.Text = "Include settings that are the same"
+$checkIncludeSame.Text = "Include settings that are the same in generated reports"
 $checkIncludeSame.Location = New-Object System.Drawing.Point(180, 135)
-$checkIncludeSame.Size = New-Object System.Drawing.Size(260, 24)
+$checkIncludeSame.Size = New-Object System.Drawing.Size(340, 24)
 $checkIncludeSame.Checked = $true
+
+$checkOnlyShowDifferences = New-Object System.Windows.Forms.CheckBox
+$checkOnlyShowDifferences.Text = "Only show differences"
+$checkOnlyShowDifferences.Location = New-Object System.Drawing.Point(540, 135)
+$checkOnlyShowDifferences.Size = New-Object System.Drawing.Size(220, 24)
+$checkOnlyShowDifferences.Checked = $false
 
 $buttonCompare = New-Object System.Windows.Forms.Button
 $buttonCompare.Text = "Compare GPOs"
@@ -120,28 +295,35 @@ $buttonOpenHtml.Enabled = $false
 $statusLabel = New-Object System.Windows.Forms.Label
 $statusLabel.Text = "Select two GPO backup folders to begin."
 $statusLabel.Location = New-Object System.Drawing.Point(420, 178)
-$statusLabel.Size = New-Object System.Drawing.Size(640, 22)
+$statusLabel.Size = New-Object System.Drawing.Size(750, 22)
 $statusLabel.Anchor = "Top,Left,Right"
 
 $grid = New-Object System.Windows.Forms.DataGridView
 $grid.Location = New-Object System.Drawing.Point(15, 220)
-$grid.Size = New-Object System.Drawing.Size(1045, 400)
+$grid.Size = New-Object System.Drawing.Size(1155, 455)
 $grid.Anchor = "Top,Bottom,Left,Right"
 $grid.ReadOnly = $true
 $grid.AllowUserToAddRows = $false
 $grid.AllowUserToDeleteRows = $false
 $grid.SelectionMode = "FullRowSelect"
-$grid.AutoSizeColumnsMode = "DisplayedCells"
+$grid.MultiSelect = $true
 $grid.AutoGenerateColumns = $true
+$grid.AutoSizeColumnsMode = "DisplayedCells"
+$grid.BackgroundColor = [System.Drawing.Color]::White
+$grid.BorderStyle = [System.Windows.Forms.BorderStyle]::Fixed3D
+$grid.ClipboardCopyMode = [System.Windows.Forms.DataGridViewClipboardCopyMode]::EnableAlwaysIncludeHeaderText
 
 $summaryLabel = New-Object System.Windows.Forms.Label
 $summaryLabel.Text = ""
-$summaryLabel.Location = New-Object System.Drawing.Point(15, 635)
-$summaryLabel.Size = New-Object System.Drawing.Size(1045, 25)
+$summaryLabel.Location = New-Object System.Drawing.Point(15, 695)
+$summaryLabel.Size = New-Object System.Drawing.Size(1155, 25)
 $summaryLabel.Anchor = "Bottom,Left,Right"
 
 $script:lastCsvPath = $null
 $script:lastHtmlPath = $null
+$script:lastResult = $null
+$script:gridDisplayColumns = $null
+$script:visibleRowCount = 0
 
 $buttonGpo1.Add_Click({
     $folder = Select-Folder -Description "Select the first GPO backup folder"
@@ -164,13 +346,32 @@ $buttonOutput.Add_Click({
     }
 })
 
+$checkOnlyShowDifferences.Add_CheckedChanged({
+    if ($script:lastCsvPath) {
+        Refresh-GridFromCsv
+    }
+})
+
+$grid.Add_DataBindingComplete({
+    Format-Grid -Grid $grid
+    Apply-GridRowColors -Grid $grid
+})
+
 $buttonCompare.Add_Click({
 
     try {
         $buttonCompare.Enabled = $false
         $buttonOpenCsv.Enabled = $false
         $buttonOpenHtml.Enabled = $false
+
         $grid.DataSource = $null
+
+        $script:lastResult = $null
+        $script:lastCsvPath = $null
+        $script:lastHtmlPath = $null
+        $script:gridDisplayColumns = $null
+        $script:visibleRowCount = 0
+
         $summaryLabel.Text = ""
         $statusLabel.Text = "Running comparison..."
 
@@ -192,18 +393,16 @@ $buttonCompare.Add_Click({
             -OutputFolder $textOutput.Text `
             -IncludeSame:$checkIncludeSame.Checked
 
+        $script:lastResult = $result
         $script:lastCsvPath = $result.CsvOutputPath
         $script:lastHtmlPath = $result.HtmlOutputPath
 
-        $grid.DataSource = @($result.Differences)
+        $script:gridDisplayColumns = Get-GridDisplayColumns `
+            -Gpo1Name $result.Gpo1Name `
+            -Gpo2Name $result.Gpo2Name
 
-        $totalCount = @($result.Differences).Count
-        $addedCount = @($result.Differences | Where-Object DifferenceType -eq "Added").Count
-        $removedCount = @($result.Differences | Where-Object DifferenceType -eq "Removed").Count
-        $changedCount = @($result.Differences | Where-Object DifferenceType -eq "Changed").Count
-        $sameCount = @($result.Differences | Where-Object DifferenceType -eq "Same").Count
+        Refresh-GridFromCsv
 
-        $summaryLabel.Text = "Compared '$($result.Gpo1Name)' to '$($result.Gpo2Name)' | Total: $totalCount | Added: $addedCount | Removed: $removedCount | Changed: $changedCount | Same: $sameCount"
         $statusLabel.Text = "Comparison complete."
 
         $buttonOpenCsv.Enabled = $true
@@ -211,6 +410,7 @@ $buttonCompare.Add_Click({
     }
     catch {
         $statusLabel.Text = "Comparison failed."
+
         [System.Windows.Forms.MessageBox]::Show(
             $_.Exception.Message,
             "Comparison Error",
@@ -246,6 +446,7 @@ $form.Controls.AddRange(@(
     $textOutput,
     $buttonOutput,
     $checkIncludeSame,
+    $checkOnlyShowDifferences,
     $buttonCompare,
     $buttonOpenCsv,
     $buttonOpenHtml,
