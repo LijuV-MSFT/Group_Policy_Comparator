@@ -19,19 +19,265 @@ if (-not (Test-Path -LiteralPath $CoreScript -PathType Leaf)) {
 
 . $CoreScript
 
+function Initialize-ModernFolderPicker {
+    if ("ModernFolderPicker.FileDialog" -as [type]) {
+        return
+    }
+
+    $source = @"
+using System;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+
+namespace ModernFolderPicker
+{
+    [Flags]
+    public enum FileOpenOptions : uint
+    {
+        OverwritePrompt        = 0x00000002,
+        StrictFileTypes        = 0x00000004,
+        NoChangeDir            = 0x00000008,
+        PickFolders            = 0x00000020,
+        ForceFileSystem        = 0x00000040,
+        AllNonStorageItems     = 0x00000080,
+        NoValidate             = 0x00000100,
+        AllowMultiSelect       = 0x00000200,
+        PathMustExist          = 0x00000800,
+        FileMustExist          = 0x00001000,
+        CreatePrompt           = 0x00002000,
+        ShareAware             = 0x00004000,
+        NoReadOnlyReturn       = 0x00008000,
+        NoTestFileCreate       = 0x00010000,
+        HideMruPlaces          = 0x00020000,
+        HidePinnedPlaces       = 0x00040000,
+        NoDereferenceLinks     = 0x00100000,
+        OkButtonNeedsInteraction = 0x00200000,
+        DontAddToRecent        = 0x02000000,
+        ForceShowHidden        = 0x10000000,
+        DefaultNoMiniMode      = 0x20000000,
+        ForcePreviewPaneOn     = 0x40000000,
+        SupportStreamableItems = 0x80000000
+    }
+
+    public enum Sigdn : uint
+    {
+        FileSysPath = 0x80058000
+    }
+
+    [ComImport]
+    [Guid("42f85136-db7e-439c-85f1-e4075d135fc8")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IFileDialog
+    {
+        [PreserveSig]
+        int Show(IntPtr parent);
+
+        void SetFileTypes(uint cFileTypes, IntPtr rgFilterSpec);
+        void SetFileTypeIndex(uint iFileType);
+        void GetFileTypeIndex(out uint piFileType);
+        void Advise(IntPtr pfde, out uint pdwCookie);
+        void Unadvise(uint dwCookie);
+        void SetOptions(FileOpenOptions fos);
+        void GetOptions(out FileOpenOptions pfos);
+        void SetDefaultFolder(IShellItem psi);
+        void SetFolder(IShellItem psi);
+        void GetFolder(out IShellItem ppsi);
+        void GetCurrentSelection(out IShellItem ppsi);
+        void SetFileName([MarshalAs(UnmanagedType.LPWStr)] string pszName);
+        void GetFileName([MarshalAs(UnmanagedType.LPWStr)] out string pszName);
+        void SetTitle([MarshalAs(UnmanagedType.LPWStr)] string pszTitle);
+        void SetOkButtonLabel([MarshalAs(UnmanagedType.LPWStr)] string pszText);
+        void SetFileNameLabel([MarshalAs(UnmanagedType.LPWStr)] string pszLabel);
+        void GetResult(out IShellItem ppsi);
+        void AddPlace(IShellItem psi, uint fdap);
+        void SetDefaultExtension([MarshalAs(UnmanagedType.LPWStr)] string pszDefaultExtension);
+        void Close(int hr);
+        void SetClientGuid(ref Guid guid);
+        void ClearClientData();
+        void SetFilter(IntPtr pFilter);
+    }
+
+    [ComImport]
+    [Guid("d57c7288-d4ad-4768-be02-9d969532d960")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IFileOpenDialog : IFileDialog
+    {
+        [PreserveSig]
+        new int Show(IntPtr parent);
+
+        new void SetFileTypes(uint cFileTypes, IntPtr rgFilterSpec);
+        new void SetFileTypeIndex(uint iFileType);
+        new void GetFileTypeIndex(out uint piFileType);
+        new void Advise(IntPtr pfde, out uint pdwCookie);
+        new void Unadvise(uint dwCookie);
+        new void SetOptions(FileOpenOptions fos);
+        new void GetOptions(out FileOpenOptions pfos);
+        new void SetDefaultFolder(IShellItem psi);
+        new void SetFolder(IShellItem psi);
+        new void GetFolder(out IShellItem ppsi);
+        new void GetCurrentSelection(out IShellItem ppsi);
+        new void SetFileName([MarshalAs(UnmanagedType.LPWStr)] string pszName);
+        new void GetFileName([MarshalAs(UnmanagedType.LPWStr)] out string pszName);
+        new void SetTitle([MarshalAs(UnmanagedType.LPWStr)] string pszTitle);
+        new void SetOkButtonLabel([MarshalAs(UnmanagedType.LPWStr)] string pszText);
+        new void SetFileNameLabel([MarshalAs(UnmanagedType.LPWStr)] string pszLabel);
+        new void GetResult(out IShellItem ppsi);
+        new void AddPlace(IShellItem psi, uint fdap);
+        new void SetDefaultExtension([MarshalAs(UnmanagedType.LPWStr)] string pszDefaultExtension);
+        new void Close(int hr);
+        new void SetClientGuid(ref Guid guid);
+        new void ClearClientData();
+        new void SetFilter(IntPtr pFilter);
+
+        void GetResults(IntPtr ppsai);
+        void GetSelectedItems(IntPtr ppsai);
+    }
+
+    [ComImport]
+    [Guid("43826d1e-e718-42ee-bc55-a1e261c37bfe")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IShellItem
+    {
+        void BindToHandler(IntPtr pbc, ref Guid bhid, ref Guid riid, out IntPtr ppv);
+        void GetParent(out IShellItem ppsi);
+        void GetDisplayName(Sigdn sigdnName, out IntPtr ppszName);
+        void GetAttributes(uint sfgaoMask, out uint psfgaoAttribs);
+        void Compare(IShellItem psi, uint hint, out int piOrder);
+    }
+
+    [ComImport]
+    [Guid("DC1C5A9C-E88A-4DDE-A5A1-60F82A20AEF7")]
+    public class FileOpenDialogRCW
+    {
+    }
+
+    public static class NativeMethods
+    {
+        [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = false)]
+        public static extern void SHCreateItemFromParsingName(
+            [MarshalAs(UnmanagedType.LPWStr)] string pszPath,
+            IntPtr pbc,
+            ref Guid riid,
+            out IShellItem ppv);
+    }
+
+    public static class FileDialog
+    {
+        public static string SelectFolder(string title, string initialFolder, bool forcePreviewPane)
+        {
+            IFileOpenDialog dialog = (IFileOpenDialog)new FileOpenDialogRCW();
+
+            try
+            {
+                FileOpenOptions options;
+                dialog.GetOptions(out options);
+
+                options |= FileOpenOptions.PickFolders;
+                options |= FileOpenOptions.ForceFileSystem;
+                options |= FileOpenOptions.PathMustExist;
+
+                if (forcePreviewPane)
+                {
+                    options |= FileOpenOptions.ForcePreviewPaneOn;
+                }
+
+                dialog.SetOptions(options);
+                dialog.SetTitle(title);
+                dialog.SetOkButtonLabel("Select Folder");
+
+                if (!String.IsNullOrWhiteSpace(initialFolder) &&
+                    System.IO.Directory.Exists(initialFolder))
+                {
+                    Guid shellItemGuid = typeof(IShellItem).GUID;
+                    IShellItem initialShellItem;
+                    NativeMethods.SHCreateItemFromParsingName(
+                        initialFolder,
+                        IntPtr.Zero,
+                        ref shellItemGuid,
+                        out initialShellItem);
+
+                    dialog.SetDefaultFolder(initialShellItem);
+                }
+
+                int result = dialog.Show(IntPtr.Zero);
+
+                const int HRESULT_CANCELLED = unchecked((int)0x800704C7);
+
+                if (result == HRESULT_CANCELLED)
+                {
+                    return null;
+                }
+
+                if (result != 0)
+                {
+                    Marshal.ThrowExceptionForHR(result);
+                }
+
+                IShellItem selectedItem;
+                dialog.GetResult(out selectedItem);
+
+                IntPtr pathPointer;
+                selectedItem.GetDisplayName(Sigdn.FileSysPath, out pathPointer);
+
+                try
+                {
+                    return Marshal.PtrToStringUni(pathPointer);
+                }
+                finally
+                {
+                    Marshal.FreeCoTaskMem(pathPointer);
+                }
+            }
+            finally
+            {
+                if (dialog != null && Marshal.IsComObject(dialog))
+                {
+                    Marshal.FinalReleaseComObject(dialog);
+                }
+            }
+        }
+    }
+}
+"@
+
+    Add-Type -TypeDefinition $source -Language CSharp
+}
+
 function Select-Folder {
     param(
-        [string]$Description
+        [Parameter(Mandatory)]
+        [string]$Description,
+
+        [string]$InitialFolder,
+
+        [switch]$EnablePreviewPane
     )
 
-    $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
-    $dialog.Description = $Description
-    $dialog.ShowNewFolderButton = $true
+    Initialize-ModernFolderPicker
 
-    $result = $dialog.ShowDialog()
+    return [ModernFolderPicker.FileDialog]::SelectFolder(
+        $Description,
+        $InitialFolder,
+        $EnablePreviewPane.IsPresent
+    )
+}
 
-    if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
-        return $dialog.SelectedPath
+function Get-FirstExistingFolder {
+    param(
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string[]]$CandidatePath
+    )
+
+    foreach ($path in @($CandidatePath)) {
+
+        if ([string]::IsNullOrWhiteSpace($path)) {
+            continue
+        }
+
+        if (Test-Path -LiteralPath $path -PathType Container) {
+            return $path
+        }
     }
 
     return $null
@@ -326,23 +572,90 @@ $script:gridDisplayColumns = $null
 $script:visibleRowCount = 0
 
 $buttonGpo1.Add_Click({
-    $folder = Select-Folder -Description "Select the first GPO backup folder"
-    if ($folder) {
-        $textGpo1.Text = $folder
+    try {
+        $initialFolder = Get-FirstExistingFolder -CandidatePath @(
+            $textGpo1.Text
+            $textOutput.Text
+            [Environment]::GetFolderPath("Desktop")
+        )
+
+        $folder = Select-Folder `
+            -Description "Select the first GPO backup folder" `
+            -InitialFolder $initialFolder `
+            -EnablePreviewPane
+
+        if (-not [string]::IsNullOrWhiteSpace($folder)) {
+            $textGpo1.Text = $folder
+        }
+    }
+    catch {
+        [System.Windows.Forms.MessageBox]::Show(
+            $_.Exception.Message,
+            "Folder Selection Error",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Error
+        )
     }
 })
 
 $buttonGpo2.Add_Click({
-    $folder = Select-Folder -Description "Select the second GPO backup folder"
-    if ($folder) {
-        $textGpo2.Text = $folder
+    try {
+        $gpo1ParentFolder = $null
+
+        if (-not [string]::IsNullOrWhiteSpace($textGpo1.Text) -and
+            (Test-Path -LiteralPath $textGpo1.Text -PathType Container)) {
+
+            $gpo1ParentFolder = Split-Path -Parent $textGpo1.Text
+        }
+
+        $initialFolder = Get-FirstExistingFolder -CandidatePath @(
+            $textGpo2.Text
+            $gpo1ParentFolder
+            $textOutput.Text
+            [Environment]::GetFolderPath("Desktop")
+        )
+
+        $folder = Select-Folder `
+            -Description "Select the second GPO backup folder" `
+            -InitialFolder $initialFolder `
+            -EnablePreviewPane
+
+        if (-not [string]::IsNullOrWhiteSpace($folder)) {
+            $textGpo2.Text = $folder
+        }
+    }
+    catch {
+        [System.Windows.Forms.MessageBox]::Show(
+            $_.Exception.Message,
+            "Folder Selection Error",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Error
+        )
     }
 })
 
 $buttonOutput.Add_Click({
-    $folder = Select-Folder -Description "Select the output folder for CSV and HTML reports"
-    if ($folder) {
-        $textOutput.Text = $folder
+    try {
+        $initialFolder = Get-FirstExistingFolder -CandidatePath @(
+            $textOutput.Text
+            [Environment]::GetFolderPath("Desktop")
+        )
+
+        $folder = Select-Folder `
+            -Description "Select the output folder for CSV and HTML reports" `
+            -InitialFolder $initialFolder
+
+        if (-not [string]::IsNullOrWhiteSpace($folder)) {
+            $textOutput.Text = $folder
+        }
+    }
+    catch {
+        [System.Windows.Forms.MessageBox]::Show(
+            $_.Exception.Message,
+            "Folder Selection Error",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Error
+        )
     }
 })
 
