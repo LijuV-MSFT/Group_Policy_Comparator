@@ -510,7 +510,7 @@ $buttonOutput.Size = New-Object System.Drawing.Size(110, 28)
 $buttonOutput.Anchor = "Top,Right"
 
 $checkIncludeSame = New-Object System.Windows.Forms.CheckBox
-$checkIncludeSame.Text = "Include settings that are the same in generated reports"
+$checkIncludeSame.Text = "Include equal values in generated reports"
 $checkIncludeSame.Location = New-Object System.Drawing.Point(180, 135)
 $checkIncludeSame.Size = New-Object System.Drawing.Size(340, 24)
 $checkIncludeSame.Checked = $true
