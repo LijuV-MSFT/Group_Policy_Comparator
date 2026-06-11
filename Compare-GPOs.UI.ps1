@@ -292,17 +292,18 @@ function Get-GridDisplayColumns {
         [string]$Gpo2Name
     )
 
-    @(
-        "PolicyScope",
-        "PolicyContainer",
-        "SettingCategory",
-        "SettingType",
-        "SettingName",
-        "Path",
-        "DifferenceType",
-        "$Gpo1Name Value",
-        "$Gpo2Name Value"
-    )
+	@(
+		"PolicyScope",
+		"PolicyContainer",
+		"SettingCategory",
+		"SettingType",
+		"SettingName",
+		"Path",
+		"Property",
+		"DifferenceType",
+		"$Gpo1Name Value",
+		"$Gpo2Name Value"
+	)
 }
 
 function Convert-ObjectsToDataTable {
