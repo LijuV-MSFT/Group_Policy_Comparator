@@ -1047,7 +1047,12 @@ function Invoke-GpoComparison {
             -ReferenceObject $Gpo1.Scripts `
             -DifferenceObject $Gpo2.Scripts `
             -KeyScript { param($x) "$($x.Type)\$($x.Order)\$($x.Command)" } `
-            -CompareProperties @("Command", "Type", "Order", "RunOrder") `
+            -CompareProperties @(
+                "Command",
+                "Type",
+                "Order",
+                "RunOrder"
+            ) `
             -ObjectType "Scripts" `
             @commonCompareParameters
 
@@ -1055,7 +1060,9 @@ function Invoke-GpoComparison {
             -ReferenceObject $Gpo1.AccountPolicies `
             -DifferenceObject $Gpo2.AccountPolicies `
             -KeyScript { param($x) "$($x.Type)\$($x.Name)" } `
-            -CompareProperties @("SettingValue") `
+            -CompareProperties @(
+                "SettingValue"
+            ) `
             -ObjectType "AccountPolicies" `
             @commonCompareParameters
 
@@ -1063,7 +1070,10 @@ function Invoke-GpoComparison {
             -ReferenceObject $Gpo1.AuditPolicies `
             -DifferenceObject $Gpo2.AuditPolicies `
             -KeyScript { param($x) "$($x.Name)" } `
-            -CompareProperties @("SuccessAttempts", "FailureAttempts") `
+            -CompareProperties @(
+                "SuccessAttempts",
+                "FailureAttempts"
+            ) `
             -ObjectType "AuditPolicies" `
             @commonCompareParameters
 
@@ -1071,7 +1081,9 @@ function Invoke-GpoComparison {
             -ReferenceObject $Gpo1.AdvancedAuditSettings `
             -DifferenceObject $Gpo2.AdvancedAuditSettings `
             -KeyScript { param($x) "$($x.PolicyTarget)\$($x.SubcategoryName)" } `
-            -CompareProperties @("SettingValue") `
+            -CompareProperties @(
+                "SettingValue"
+            ) `
             -ObjectType "AdvancedAuditSettings" `
             @commonCompareParameters
 
@@ -1079,7 +1091,9 @@ function Invoke-GpoComparison {
             -ReferenceObject $Gpo1.UserRights `
             -DifferenceObject $Gpo2.UserRights `
             -KeyScript { param($x) "$($x.Name)" } `
-            -CompareProperties @("Member") `
+            -CompareProperties @(
+                "Member"
+            ) `
             -ObjectType "UserRights" `
             @commonCompareParameters
 
@@ -1101,7 +1115,9 @@ function Invoke-GpoComparison {
 
                 "$identity"
             } `
-            -CompareProperties @("SettingValue") `
+            -CompareProperties @(
+                "SettingValue"
+            ) `
             -ObjectType "SecurityOptions" `
             @commonCompareParameters
 
@@ -1109,7 +1125,9 @@ function Invoke-GpoComparison {
             -ReferenceObject $Gpo1.EventLogSettings `
             -DifferenceObject $Gpo2.EventLogSettings `
             -KeyScript { param($x) "$($x.Log)\$($x.Name)" } `
-            -CompareProperties @("SettingValue") `
+            -CompareProperties @(
+                "SettingValue"
+            ) `
             -ObjectType "EventLogSettings" `
             @commonCompareParameters
 
@@ -1117,7 +1135,10 @@ function Invoke-GpoComparison {
             -ReferenceObject $Gpo1.RestrictedGroups `
             -DifferenceObject $Gpo2.RestrictedGroups `
             -KeyScript { param($x) "$($x.Name)" } `
-            -CompareProperties @("Member", "MemberOf") `
+            -CompareProperties @(
+                "Member",
+                "MemberOf"
+            ) `
             -ObjectType "RestrictedGroups" `
             @commonCompareParameters
 
@@ -1125,7 +1146,9 @@ function Invoke-GpoComparison {
             -ReferenceObject $Gpo1.PolicySettings `
             -DifferenceObject $Gpo2.PolicySettings `
             -KeyScript { param($x) "$($x.Category)\$($x.Name)" } `
-            -CompareProperties @("State") `
+            -CompareProperties @(
+                "State"
+            ) `
             -ObjectType "PolicySettings" `
             @commonCompareParameters
 
@@ -1133,7 +1156,13 @@ function Invoke-GpoComparison {
             -ReferenceObject $Gpo1.RegistrySettings `
             -DifferenceObject $Gpo2.RegistrySettings `
             -KeyScript { param($x) "$($x.Hive)\$($x.Key)\$($x.ValueName)" } `
-            -CompareProperties @("Action", "Type", "Value", "RemovePolicy") `
+            -CompareProperties @(
+                "GPOSettingOrder",
+                "Action",
+                "Type",
+                "Value",
+                "RemovePolicy"
+            ) `
             -ObjectType "RegistrySettings" `
             @commonCompareParameters
     )
