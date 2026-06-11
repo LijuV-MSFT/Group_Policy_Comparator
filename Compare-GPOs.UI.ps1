@@ -34,29 +34,29 @@ namespace ModernFolderPicker
     [Flags]
     public enum FileOpenOptions : uint
     {
-        OverwritePrompt        = 0x00000002,
-        StrictFileTypes        = 0x00000004,
-        NoChangeDir            = 0x00000008,
-        PickFolders            = 0x00000020,
-        ForceFileSystem        = 0x00000040,
-        AllNonStorageItems     = 0x00000080,
-        NoValidate             = 0x00000100,
-        AllowMultiSelect       = 0x00000200,
-        PathMustExist          = 0x00000800,
-        FileMustExist          = 0x00001000,
-        CreatePrompt           = 0x00002000,
-        ShareAware             = 0x00004000,
-        NoReadOnlyReturn       = 0x00008000,
-        NoTestFileCreate       = 0x00010000,
-        HideMruPlaces          = 0x00020000,
-        HidePinnedPlaces       = 0x00040000,
-        NoDereferenceLinks     = 0x00100000,
+        OverwritePrompt          = 0x00000002,
+        StrictFileTypes          = 0x00000004,
+        NoChangeDir              = 0x00000008,
+        PickFolders              = 0x00000020,
+        ForceFileSystem          = 0x00000040,
+        AllNonStorageItems       = 0x00000080,
+        NoValidate               = 0x00000100,
+        AllowMultiSelect         = 0x00000200,
+        PathMustExist            = 0x00000800,
+        FileMustExist            = 0x00001000,
+        CreatePrompt             = 0x00002000,
+        ShareAware               = 0x00004000,
+        NoReadOnlyReturn         = 0x00008000,
+        NoTestFileCreate         = 0x00010000,
+        HideMruPlaces            = 0x00020000,
+        HidePinnedPlaces         = 0x00040000,
+        NoDereferenceLinks       = 0x00100000,
         OkButtonNeedsInteraction = 0x00200000,
-        DontAddToRecent        = 0x02000000,
-        ForceShowHidden        = 0x10000000,
-        DefaultNoMiniMode      = 0x20000000,
-        ForcePreviewPaneOn     = 0x40000000,
-        SupportStreamableItems = 0x80000000
+        DontAddToRecent          = 0x02000000,
+        ForceShowHidden          = 0x10000000,
+        DefaultNoMiniMode        = 0x20000000,
+        ForcePreviewPaneOn       = 0x40000000,
+        SupportStreamableItems   = 0x80000000
     }
 
     public enum Sigdn : uint
@@ -190,6 +190,7 @@ namespace ModernFolderPicker
                 {
                     Guid shellItemGuid = typeof(IShellItem).GUID;
                     IShellItem initialShellItem;
+
                     NativeMethods.SHCreateItemFromParsingName(
                         initialFolder,
                         IntPtr.Zero,
@@ -270,7 +271,6 @@ function Get-FirstExistingFolder {
     )
 
     foreach ($path in @($CandidatePath)) {
-
         if ([string]::IsNullOrWhiteSpace($path)) {
             continue
         }
@@ -337,7 +337,7 @@ function Convert-ObjectsToDataTable {
         [void]$dataTable.Rows.Add($dataRow)
     }
 
-    # Important: prevent PowerShell from enumerating the DataTable rows
+    # Important: prevent PowerShell from enumerating the DataTable rows.
     return ,$dataTable
 }
 
@@ -360,8 +360,15 @@ function Refresh-GridFromCsv {
         -Rows $rows `
         -Columns $script:gridDisplayColumns
 
-    $grid.DataSource = $null
-    $grid.DataSource = $dataTable
+    $grid.SuspendLayout()
+
+    try {
+        $grid.DataSource = $null
+        $grid.DataSource = $dataTable
+    }
+    finally {
+        $grid.ResumeLayout()
+    }
 
     $script:visibleRowCount = @($rows).Count
 
@@ -376,23 +383,90 @@ function Format-Grid {
         [System.Windows.Forms.DataGridView]$Grid
     )
 
-    $Grid.AutoGenerateColumns = $true
-    $Grid.AutoSizeColumnsMode = "DisplayedCells"
-    $Grid.AutoSizeRowsMode = "DisplayedCells"
-    $Grid.DefaultCellStyle.WrapMode = [System.Windows.Forms.DataGridViewTriState]::True
-    $Grid.ColumnHeadersDefaultCellStyle.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
-    $Grid.RowHeadersVisible = $false
+    $Grid.SuspendLayout()
 
-    foreach ($column in $Grid.Columns) {
-        $column.SortMode = [System.Windows.Forms.DataGridViewColumnSortMode]::Automatic
+    try {
+        $Grid.AutoGenerateColumns = $true
 
-        if ($column.Name -like "* Value") {
-            $column.DefaultCellStyle.Font = New-Object System.Drawing.Font("Consolas", 9)
+        # Do not use DisplayedCells here.
+        # DisplayedCells + long Path/value columns can cause bad maximized layout.
+        $Grid.AutoSizeColumnsMode = [System.Windows.Forms.DataGridViewAutoSizeColumnsMode]::None
+        $Grid.AutoSizeRowsMode = [System.Windows.Forms.DataGridViewAutoSizeRowsMode]::None
+
+        $Grid.DefaultCellStyle.WrapMode = [System.Windows.Forms.DataGridViewTriState]::False
+        $Grid.ColumnHeadersDefaultCellStyle.WrapMode = [System.Windows.Forms.DataGridViewTriState]::False
+
+        $Grid.RowTemplate.Height = 24
+        $Grid.RowHeadersVisible = $false
+        $Grid.AllowUserToResizeColumns = $true
+        $Grid.AllowUserToResizeRows = $false
+        $Grid.ScrollBars = [System.Windows.Forms.ScrollBars]::Both
+
+        $Grid.ColumnHeadersHeightSizeMode = [System.Windows.Forms.DataGridViewColumnHeadersHeightSizeMode]::DisableResizing
+        $Grid.ColumnHeadersHeight = 24
+
+        $Grid.DefaultCellStyle.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+        $Grid.ColumnHeadersDefaultCellStyle.Font = New-Object System.Drawing.Font(
+            "Segoe UI",
+            9,
+            [System.Drawing.FontStyle]::Bold
+        )
+
+        foreach ($column in $Grid.Columns) {
+            $column.SortMode = [System.Windows.Forms.DataGridViewColumnSortMode]::Automatic
+            $column.AutoSizeMode = [System.Windows.Forms.DataGridViewAutoSizeColumnMode]::None
+            $column.MinimumWidth = 50
+
+            switch ($column.Name) {
+                "PolicyScope" {
+                    $column.Width = 90
+                }
+
+                "PolicyContainer" {
+                    $column.Width = 120
+                }
+
+                "SettingCategory" {
+                    $column.Width = 160
+                }
+
+                "SettingType" {
+                    $column.Width = 160
+                }
+
+                "SettingName" {
+                    $column.Width = 300
+                }
+
+                "Path" {
+                    $column.Width = 500
+                    $column.DefaultCellStyle.Font = New-Object System.Drawing.Font("Consolas", 9)
+                }
+
+                "DifferenceType" {
+                    $column.Width = 120
+                }
+
+                default {
+                    if ($column.Name -like "* Value") {
+                        $column.Width = 260
+                        $column.DefaultCellStyle.Font = New-Object System.Drawing.Font("Consolas", 9)
+                    }
+                    else {
+                        $column.Width = 140
+                    }
+                }
+            }
         }
 
-        if ($column.Name -eq "Path") {
-            $column.DefaultCellStyle.Font = New-Object System.Drawing.Font("Consolas", 9)
+        foreach ($row in $Grid.Rows) {
+            if (-not $row.IsNewRow) {
+                $row.Height = 24
+            }
         }
+    }
+    finally {
+        $Grid.ResumeLayout()
     }
 }
 
@@ -406,27 +480,39 @@ function Apply-GridRowColors {
         return
     }
 
-    foreach ($row in $Grid.Rows) {
-        if ($row.IsNewRow) {
-            continue
-        }
+    $Grid.SuspendLayout()
 
-        $differenceType = [string]$row.Cells["DifferenceType"].Value
+    try {
+        foreach ($row in $Grid.Rows) {
+            if ($row.IsNewRow) {
+                continue
+            }
 
-        switch ($differenceType) {
-            "Added" {
-                $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::LightGreen
-            }
-            "Removed" {
-                $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::Salmon
-            }
-            "Changed" {
-                $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::LightSkyBlue
-            }
-            default {
-                $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::White
+            $row.Height = 24
+
+            $differenceType = [string]$row.Cells["DifferenceType"].Value
+
+            switch ($differenceType) {
+                "Added" {
+                    $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::LightGreen
+                }
+
+                "Removed" {
+                    $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::Salmon
+                }
+
+                "Changed" {
+                    $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::LightSkyBlue
+                }
+
+                default {
+                    $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::White
+                }
             }
         }
+    }
+    finally {
+        $Grid.ResumeLayout()
     }
 }
 
@@ -546,7 +632,10 @@ $statusLabel.Anchor = "Top,Left,Right"
 
 $grid = New-Object System.Windows.Forms.DataGridView
 $grid.Location = New-Object System.Drawing.Point(15, 220)
-$grid.Size = New-Object System.Drawing.Size(1155, 455)
+$grid.Size = New-Object System.Drawing.Size(
+    ($form.ClientSize.Width - 30),
+    ($form.ClientSize.Height - 270)
+)
 $grid.Anchor = "Top,Bottom,Left,Right"
 $grid.ReadOnly = $true
 $grid.AllowUserToAddRows = $false
@@ -554,16 +643,29 @@ $grid.AllowUserToDeleteRows = $false
 $grid.SelectionMode = "FullRowSelect"
 $grid.MultiSelect = $true
 $grid.AutoGenerateColumns = $true
-$grid.AutoSizeColumnsMode = "DisplayedCells"
+$grid.AutoSizeColumnsMode = [System.Windows.Forms.DataGridViewAutoSizeColumnsMode]::None
+$grid.AutoSizeRowsMode = [System.Windows.Forms.DataGridViewAutoSizeRowsMode]::None
+$grid.DefaultCellStyle.WrapMode = [System.Windows.Forms.DataGridViewTriState]::False
+$grid.ScrollBars = [System.Windows.Forms.ScrollBars]::Both
 $grid.BackgroundColor = [System.Drawing.Color]::White
 $grid.BorderStyle = [System.Windows.Forms.BorderStyle]::Fixed3D
 $grid.ClipboardCopyMode = [System.Windows.Forms.DataGridViewClipboardCopyMode]::EnableAlwaysIncludeHeaderText
 
 $summaryLabel = New-Object System.Windows.Forms.Label
 $summaryLabel.Text = ""
-$summaryLabel.Location = New-Object System.Drawing.Point(15, 695)
-$summaryLabel.Size = New-Object System.Drawing.Size(1155, 25)
+$summaryLabel.Location = New-Object System.Drawing.Point(15, ($form.ClientSize.Height - 35))
+$summaryLabel.Size = New-Object System.Drawing.Size(($form.ClientSize.Width - 30), 25)
 $summaryLabel.Anchor = "Bottom,Left,Right"
+
+$form.Add_Resize({
+    $availableWidth = [Math]::Max(300, $form.ClientSize.Width - 30)
+    $availableHeight = [Math]::Max(200, $form.ClientSize.Height - 270)
+
+    $grid.Size = New-Object System.Drawing.Size($availableWidth, $availableHeight)
+
+    $summaryLabel.Location = New-Object System.Drawing.Point(15, ($form.ClientSize.Height - 35))
+    $summaryLabel.Size = New-Object System.Drawing.Size($availableWidth, 25)
+})
 
 $script:lastCsvPath = $null
 $script:lastHtmlPath = $null
@@ -604,7 +706,6 @@ $buttonGpo2.Add_Click({
 
         if (-not [string]::IsNullOrWhiteSpace($textGpo1.Text) -and
             (Test-Path -LiteralPath $textGpo1.Text -PathType Container)) {
-
             $gpo1ParentFolder = Split-Path -Parent $textGpo1.Text
         }
 
@@ -671,7 +772,6 @@ $grid.Add_DataBindingComplete({
 })
 
 $buttonCompare.Add_Click({
-
     try {
         $buttonCompare.Enabled = $false
         $buttonOpenCsv.Enabled = $false
