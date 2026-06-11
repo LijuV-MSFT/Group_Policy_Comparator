@@ -292,18 +292,17 @@ function Get-GridDisplayColumns {
         [string]$Gpo2Name
     )
 
-	@(
-		"PolicyScope",
-		"PolicyContainer",
-		"SettingCategory",
-		"SettingType",
-		"SettingName",
-		"Path",
-		"Property",
-		"DifferenceType",
-		"$Gpo1Name Value",
-		"$Gpo2Name Value"
-	)
+    @(
+        "PolicyScope",
+        "PolicyContainer",
+        "SettingCategory",
+        "SettingType",
+        "SettingName",
+        "Path",
+        "DifferenceType",
+        "$Gpo1Name Value",
+        "$Gpo2Name Value"
+    )
 }
 
 function Convert-ObjectsToDataTable {
@@ -338,8 +337,20 @@ function Convert-ObjectsToDataTable {
         [void]$dataTable.Rows.Add($dataRow)
     }
 
-    # Important: prevent PowerShell from enumerating the DataTable rows.
+    # Important: prevent PowerShell from enumerating the DataTable rows
     return ,$dataTable
+}
+
+function Get-SelectedSettingContainerFilter {
+    if (-not $comboSettingFilter) {
+        return "All settings"
+    }
+
+    if ([string]::IsNullOrWhiteSpace([string]$comboSettingFilter.SelectedItem)) {
+        return "All settings"
+    }
+
+    return [string]$comboSettingFilter.SelectedItem
 }
 
 function Refresh-GridFromCsv {
@@ -357,19 +368,28 @@ function Refresh-GridFromCsv {
         $rows = @($rows | Where-Object { $_.DifferenceType -ne "Same" })
     }
 
+    $settingFilter = Get-SelectedSettingContainerFilter
+
+    switch ($settingFilter) {
+        "Policy settings only" {
+            $rows = @($rows | Where-Object { $_.PolicyContainer -eq "Policies" })
+        }
+
+        "Preference settings only" {
+            $rows = @($rows | Where-Object { $_.PolicyContainer -eq "Preferences" })
+        }
+
+        default {
+            # All settings
+        }
+    }
+
     [System.Data.DataTable]$dataTable = Convert-ObjectsToDataTable `
         -Rows $rows `
         -Columns $script:gridDisplayColumns
 
-    $grid.SuspendLayout()
-
-    try {
-        $grid.DataSource = $null
-        $grid.DataSource = $dataTable
-    }
-    finally {
-        $grid.ResumeLayout()
-    }
+    $grid.DataSource = $null
+    $grid.DataSource = $dataTable
 
     $script:visibleRowCount = @($rows).Count
 
@@ -384,90 +404,23 @@ function Format-Grid {
         [System.Windows.Forms.DataGridView]$Grid
     )
 
-    $Grid.SuspendLayout()
+    $Grid.AutoGenerateColumns = $true
+    $Grid.AutoSizeColumnsMode = "DisplayedCells"
+    $Grid.AutoSizeRowsMode = "DisplayedCells"
+    $Grid.DefaultCellStyle.WrapMode = [System.Windows.Forms.DataGridViewTriState]::True
+    $Grid.ColumnHeadersDefaultCellStyle.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+    $Grid.RowHeadersVisible = $false
 
-    try {
-        $Grid.AutoGenerateColumns = $true
+    foreach ($column in $Grid.Columns) {
+        $column.SortMode = [System.Windows.Forms.DataGridViewColumnSortMode]::Automatic
 
-        # Do not use DisplayedCells here.
-        # DisplayedCells + long Path/value columns can cause bad maximized layout.
-        $Grid.AutoSizeColumnsMode = [System.Windows.Forms.DataGridViewAutoSizeColumnsMode]::None
-        $Grid.AutoSizeRowsMode = [System.Windows.Forms.DataGridViewAutoSizeRowsMode]::None
-
-        $Grid.DefaultCellStyle.WrapMode = [System.Windows.Forms.DataGridViewTriState]::False
-        $Grid.ColumnHeadersDefaultCellStyle.WrapMode = [System.Windows.Forms.DataGridViewTriState]::False
-
-        $Grid.RowTemplate.Height = 24
-        $Grid.RowHeadersVisible = $false
-        $Grid.AllowUserToResizeColumns = $true
-        $Grid.AllowUserToResizeRows = $false
-        $Grid.ScrollBars = [System.Windows.Forms.ScrollBars]::Both
-
-        $Grid.ColumnHeadersHeightSizeMode = [System.Windows.Forms.DataGridViewColumnHeadersHeightSizeMode]::DisableResizing
-        $Grid.ColumnHeadersHeight = 24
-
-        $Grid.DefaultCellStyle.Font = New-Object System.Drawing.Font("Segoe UI", 9)
-        $Grid.ColumnHeadersDefaultCellStyle.Font = New-Object System.Drawing.Font(
-            "Segoe UI",
-            9,
-            [System.Drawing.FontStyle]::Bold
-        )
-
-        foreach ($column in $Grid.Columns) {
-            $column.SortMode = [System.Windows.Forms.DataGridViewColumnSortMode]::Automatic
-            $column.AutoSizeMode = [System.Windows.Forms.DataGridViewAutoSizeColumnMode]::None
-            $column.MinimumWidth = 50
-
-            switch ($column.Name) {
-                "PolicyScope" {
-                    $column.Width = 90
-                }
-
-                "PolicyContainer" {
-                    $column.Width = 120
-                }
-
-                "SettingCategory" {
-                    $column.Width = 160
-                }
-
-                "SettingType" {
-                    $column.Width = 160
-                }
-
-                "SettingName" {
-                    $column.Width = 300
-                }
-
-                "Path" {
-                    $column.Width = 500
-                    $column.DefaultCellStyle.Font = New-Object System.Drawing.Font("Consolas", 9)
-                }
-
-                "DifferenceType" {
-                    $column.Width = 120
-                }
-
-                default {
-                    if ($column.Name -like "* Value") {
-                        $column.Width = 260
-                        $column.DefaultCellStyle.Font = New-Object System.Drawing.Font("Consolas", 9)
-                    }
-                    else {
-                        $column.Width = 140
-                    }
-                }
-            }
+        if ($column.Name -like "* Value") {
+            $column.DefaultCellStyle.Font = New-Object System.Drawing.Font("Consolas", 9)
         }
 
-        foreach ($row in $Grid.Rows) {
-            if (-not $row.IsNewRow) {
-                $row.Height = 24
-            }
+        if ($column.Name -eq "Path") {
+            $column.DefaultCellStyle.Font = New-Object System.Drawing.Font("Consolas", 9)
         }
-    }
-    finally {
-        $Grid.ResumeLayout()
     }
 }
 
@@ -481,39 +434,30 @@ function Apply-GridRowColors {
         return
     }
 
-    $Grid.SuspendLayout()
+    foreach ($row in $Grid.Rows) {
+        if ($row.IsNewRow) {
+            continue
+        }
 
-    try {
-        foreach ($row in $Grid.Rows) {
-            if ($row.IsNewRow) {
-                continue
+        $differenceType = [string]$row.Cells["DifferenceType"].Value
+
+        switch ($differenceType) {
+            "Added" {
+                $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::LightGreen
             }
 
-            $row.Height = 24
+            "Removed" {
+                $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::Salmon
+            }
 
-            $differenceType = [string]$row.Cells["DifferenceType"].Value
+            "Changed" {
+                $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::LightSkyBlue
+            }
 
-            switch ($differenceType) {
-                "Added" {
-                    $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::LightGreen
-                }
-
-                "Removed" {
-                    $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::Salmon
-                }
-
-                "Changed" {
-                    $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::LightSkyBlue
-                }
-
-                default {
-                    $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::White
-                }
+            default {
+                $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::White
             }
         }
-    }
-    finally {
-        $Grid.ResumeLayout()
     }
 }
 
@@ -535,7 +479,9 @@ function Update-SummaryLabel {
         $totalCount
     }
 
-    $summaryLabel.Text = "Compared '$($script:lastResult.Gpo1Name)' to '$($script:lastResult.Gpo2Name)' | Total: $totalCount | Visible: $visibleCount | Added: $addedCount | Removed: $removedCount | Changed: $changedCount | Same: $sameCount"
+    $settingFilter = Get-SelectedSettingContainerFilter
+
+    $summaryLabel.Text = "Compared '$($script:lastResult.Gpo1Name)' to '$($script:lastResult.Gpo2Name)' | Filter: $settingFilter | Total: $totalCount | Visible: $visibleCount | Added: $addedCount | Removed: $removedCount | Changed: $changedCount | Same: $sameCount"
 }
 
 $form = New-Object System.Windows.Forms.Form
@@ -599,14 +545,28 @@ $buttonOutput.Anchor = "Top,Right"
 $checkIncludeSame = New-Object System.Windows.Forms.CheckBox
 $checkIncludeSame.Text = "Include equal values in generated reports"
 $checkIncludeSame.Location = New-Object System.Drawing.Point(180, 135)
-$checkIncludeSame.Size = New-Object System.Drawing.Size(340, 24)
+$checkIncludeSame.Size = New-Object System.Drawing.Size(280, 24)
 $checkIncludeSame.Checked = $true
 
 $checkOnlyShowDifferences = New-Object System.Windows.Forms.CheckBox
 $checkOnlyShowDifferences.Text = "Only show differences"
-$checkOnlyShowDifferences.Location = New-Object System.Drawing.Point(540, 135)
-$checkOnlyShowDifferences.Size = New-Object System.Drawing.Size(220, 24)
+$checkOnlyShowDifferences.Location = New-Object System.Drawing.Point(470, 135)
+$checkOnlyShowDifferences.Size = New-Object System.Drawing.Size(160, 24)
 $checkOnlyShowDifferences.Checked = $false
+
+$labelSettingFilter = New-Object System.Windows.Forms.Label
+$labelSettingFilter.Text = "Show:"
+$labelSettingFilter.Location = New-Object System.Drawing.Point(645, 138)
+$labelSettingFilter.Size = New-Object System.Drawing.Size(45, 20)
+
+$comboSettingFilter = New-Object System.Windows.Forms.ComboBox
+$comboSettingFilter.Location = New-Object System.Drawing.Point(695, 134)
+$comboSettingFilter.Size = New-Object System.Drawing.Size(190, 24)
+$comboSettingFilter.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
+[void]$comboSettingFilter.Items.Add("All settings")
+[void]$comboSettingFilter.Items.Add("Policy settings only")
+[void]$comboSettingFilter.Items.Add("Preference settings only")
+$comboSettingFilter.SelectedIndex = 0
 
 $buttonCompare = New-Object System.Windows.Forms.Button
 $buttonCompare.Text = "Compare GPOs"
@@ -633,10 +593,7 @@ $statusLabel.Anchor = "Top,Left,Right"
 
 $grid = New-Object System.Windows.Forms.DataGridView
 $grid.Location = New-Object System.Drawing.Point(15, 220)
-$grid.Size = New-Object System.Drawing.Size(
-    ($form.ClientSize.Width - 30),
-    ($form.ClientSize.Height - 270)
-)
+$grid.Size = New-Object System.Drawing.Size(1155, 455)
 $grid.Anchor = "Top,Bottom,Left,Right"
 $grid.ReadOnly = $true
 $grid.AllowUserToAddRows = $false
@@ -644,29 +601,16 @@ $grid.AllowUserToDeleteRows = $false
 $grid.SelectionMode = "FullRowSelect"
 $grid.MultiSelect = $true
 $grid.AutoGenerateColumns = $true
-$grid.AutoSizeColumnsMode = [System.Windows.Forms.DataGridViewAutoSizeColumnsMode]::None
-$grid.AutoSizeRowsMode = [System.Windows.Forms.DataGridViewAutoSizeRowsMode]::None
-$grid.DefaultCellStyle.WrapMode = [System.Windows.Forms.DataGridViewTriState]::False
-$grid.ScrollBars = [System.Windows.Forms.ScrollBars]::Both
+$grid.AutoSizeColumnsMode = "DisplayedCells"
 $grid.BackgroundColor = [System.Drawing.Color]::White
 $grid.BorderStyle = [System.Windows.Forms.BorderStyle]::Fixed3D
 $grid.ClipboardCopyMode = [System.Windows.Forms.DataGridViewClipboardCopyMode]::EnableAlwaysIncludeHeaderText
 
 $summaryLabel = New-Object System.Windows.Forms.Label
 $summaryLabel.Text = ""
-$summaryLabel.Location = New-Object System.Drawing.Point(15, ($form.ClientSize.Height - 35))
-$summaryLabel.Size = New-Object System.Drawing.Size(($form.ClientSize.Width - 30), 25)
+$summaryLabel.Location = New-Object System.Drawing.Point(15, 695)
+$summaryLabel.Size = New-Object System.Drawing.Size(1155, 25)
 $summaryLabel.Anchor = "Bottom,Left,Right"
-
-$form.Add_Resize({
-    $availableWidth = [Math]::Max(300, $form.ClientSize.Width - 30)
-    $availableHeight = [Math]::Max(200, $form.ClientSize.Height - 270)
-
-    $grid.Size = New-Object System.Drawing.Size($availableWidth, $availableHeight)
-
-    $summaryLabel.Location = New-Object System.Drawing.Point(15, ($form.ClientSize.Height - 35))
-    $summaryLabel.Size = New-Object System.Drawing.Size($availableWidth, 25)
-})
 
 $script:lastCsvPath = $null
 $script:lastHtmlPath = $null
@@ -767,6 +711,12 @@ $checkOnlyShowDifferences.Add_CheckedChanged({
     }
 })
 
+$comboSettingFilter.Add_SelectedIndexChanged({
+    if ($script:lastCsvPath) {
+        Refresh-GridFromCsv
+    }
+})
+
 $grid.Add_DataBindingComplete({
     Format-Grid -Grid $grid
     Apply-GridRowColors -Grid $grid
@@ -861,6 +811,8 @@ $form.Controls.AddRange(@(
     $buttonOutput,
     $checkIncludeSame,
     $checkOnlyShowDifferences,
+    $labelSettingFilter,
+    $comboSettingFilter,
     $buttonCompare,
     $buttonOpenCsv,
     $buttonOpenHtml,
