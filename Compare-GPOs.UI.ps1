@@ -1,6 +1,8 @@
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Data
+Add-Type -AssemblyName System.IO.Compression
+Add-Type -AssemblyName System.IO.Compression.FileSystem
 
 $ErrorActionPreference = "Stop"
 
@@ -263,6 +265,57 @@ function Select-Folder {
     )
 }
 
+function Select-WorkbookFile {
+    param(
+        [string]$InitialDirectory
+    )
+
+    $dialog = New-Object System.Windows.Forms.OpenFileDialog
+    $dialog.Title = "Select Windows11PolicySettings25H2.xlsx"
+    $dialog.Filter = "Excel workbook (*.xlsx)|*.xlsx|All files (*.*)|*.*"
+    $dialog.CheckFileExists = $true
+    $dialog.CheckPathExists = $true
+    $dialog.Multiselect = $false
+
+    if (-not [string]::IsNullOrWhiteSpace($InitialDirectory) -and
+        (Test-Path -LiteralPath $InitialDirectory -PathType Container)) {
+        $dialog.InitialDirectory = $InitialDirectory
+    }
+
+    $result = $dialog.ShowDialog()
+
+    if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
+        return $dialog.FileName
+    }
+
+    return $null
+}
+
+function Get-DefaultPolicyInfoWorkbookPath {
+    $candidatePaths = @(
+        (Join-Path $ScriptRoot "Windows11PolicySettings25H2.xlsx"),
+        (Join-Path $ScriptRoot "Windows11PolicySettings25H2(1).xlsx"),
+        (Join-Path (Get-Location).Path "Windows11PolicySettings25H2.xlsx"),
+        (Join-Path (Get-Location).Path "Windows11PolicySettings25H2(1).xlsx")
+    )
+
+    foreach ($path in $candidatePaths) {
+        if (Test-Path -LiteralPath $path -PathType Leaf) {
+            return $path
+        }
+    }
+
+    $wildcardMatches = @(
+        Get-ChildItem -LiteralPath $ScriptRoot -Filter "Windows11PolicySettings25H2*.xlsx" -File -ErrorAction SilentlyContinue
+    )
+
+    if ($wildcardMatches.Count -gt 0) {
+        return $wildcardMatches[0].FullName
+    }
+
+    return ""
+}
+
 function Get-FirstExistingFolder {
     param(
         [AllowNull()]
@@ -283,6 +336,427 @@ function Get-FirstExistingFolder {
     return $null
 }
 
+function Normalize-PolicyLookupKey {
+    param(
+        [AllowNull()]
+        [string]$Value
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return ""
+    }
+
+    return (($Value -replace '[^A-Za-z0-9]', '').ToLowerInvariant())
+}
+
+function Get-ZipEntryText {
+    param(
+        [Parameter(Mandatory)]
+        [System.IO.Compression.ZipArchive]$Zip,
+
+        [Parameter(Mandatory)]
+        [string]$EntryName
+    )
+
+    $entry = $Zip.GetEntry($EntryName)
+
+    if (-not $entry) {
+        return $null
+    }
+
+    $stream = $entry.Open()
+    $reader = New-Object System.IO.StreamReader($stream)
+
+    try {
+        return $reader.ReadToEnd()
+    }
+    finally {
+        $reader.Dispose()
+        $stream.Dispose()
+    }
+}
+
+function Get-OpenXmlNamespaceManager {
+    param(
+        [Parameter(Mandatory)]
+        [xml]$Xml
+    )
+
+    $namespaceManager = New-Object System.Xml.XmlNamespaceManager($Xml.NameTable)
+    $namespaceManager.AddNamespace("main", "http://schemas.openxmlformats.org/spreadsheetml/2006/main")
+    $namespaceManager.AddNamespace("rel", "http://schemas.openxmlformats.org/package/2006/relationships")
+    $namespaceManager.AddNamespace("r", "http://schemas.openxmlformats.org/officeDocument/2006/relationships")
+
+    return $namespaceManager
+}
+
+function Convert-ExcelColumnNameToNumber {
+    param(
+        [Parameter(Mandatory)]
+        [string]$ColumnName
+    )
+
+    $sum = 0
+
+    foreach ($character in $ColumnName.ToUpperInvariant().ToCharArray()) {
+        $sum *= 26
+        $sum += ([int][char]$character - [int][char]'A' + 1)
+    }
+
+    return $sum
+}
+
+function Get-ExcelColumnNumberFromCellReference {
+    param(
+        [Parameter(Mandatory)]
+        [string]$CellReference
+    )
+
+    $columnName = ($CellReference -replace '[0-9]', '')
+    return Convert-ExcelColumnNameToNumber -ColumnName $columnName
+}
+
+function Get-ExcelCellText {
+    param(
+        [Parameter(Mandatory)]
+        [System.Xml.XmlElement]$Cell,
+
+        [Parameter(Mandatory)]
+        [string[]]$SharedStrings
+    )
+
+    $cellType = [string]$Cell.GetAttribute("t")
+    $valueNode = $Cell.SelectSingleNode("./*[local-name()='v']")
+
+    if ($cellType -eq "inlineStr") {
+        $textNodes = $Cell.SelectNodes(".//main:t", (Get-OpenXmlNamespaceManager -Xml $Cell.OwnerDocument))
+        return (($textNodes | ForEach-Object { $_.InnerText }) -join "")
+    }
+
+    if (-not $valueNode) {
+        return ""
+    }
+
+    $rawValue = [string]$valueNode.InnerText
+
+    if ($cellType -eq "s") {
+        $index = 0
+
+        if ([int]::TryParse($rawValue, [ref]$index) -and $index -ge 0 -and $index -lt $SharedStrings.Count) {
+            return [string]$SharedStrings[$index]
+        }
+
+        return ""
+    }
+
+    return $rawValue
+}
+
+function Import-XlsxWorksheetRows {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path,
+
+        [Parameter(Mandatory)]
+        [string]$WorksheetName
+    )
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "Policy information workbook does not exist: $Path"
+    }
+
+    $zip = [System.IO.Compression.ZipFile]::OpenRead($Path)
+
+    try {
+        $workbookText = Get-ZipEntryText -Zip $zip -EntryName "xl/workbook.xml"
+        $relsText = Get-ZipEntryText -Zip $zip -EntryName "xl/_rels/workbook.xml.rels"
+
+        if (-not $workbookText -or -not $relsText) {
+            throw "The workbook is missing required Open XML parts."
+        }
+
+        [xml]$workbookXml = $workbookText
+        [xml]$relsXml = $relsText
+
+        $workbookNs = Get-OpenXmlNamespaceManager -Xml $workbookXml
+        $relsNs = Get-OpenXmlNamespaceManager -Xml $relsXml
+
+        $sheetNode = $workbookXml.SelectSingleNode("./*[local-name()='v']")
+
+        if (-not $sheetNode) {
+            throw "Worksheet '$WorksheetName' was not found in workbook '$Path'."
+        }
+
+        $relationshipId = $sheetNode.GetAttribute("id", "http://schemas.openxmlformats.org/officeDocument/2006/relationships")
+
+        if ([string]::IsNullOrWhiteSpace($relationshipId)) {
+            throw "Worksheet '$WorksheetName' does not have a relationship ID."
+        }
+
+        $relationshipNode = $relsXml.SelectSingleNode("./*[local-name()='v']")
+
+        if (-not $relationshipNode) {
+            throw "Could not resolve worksheet relationship '$relationshipId'."
+        }
+
+        $target = [string]$relationshipNode.Target
+
+        if ($target.StartsWith("/")) {
+            $worksheetEntryName = $target.TrimStart("/")
+        }
+        else {
+            $worksheetEntryName = "xl/$target"
+        }
+
+        $worksheetText = Get-ZipEntryText -Zip $zip -EntryName $worksheetEntryName
+
+        if (-not $worksheetText) {
+            throw "Could not read worksheet XML part '$worksheetEntryName'."
+        }
+
+        $sharedStrings = @()
+        $sharedStringsText = Get-ZipEntryText -Zip $zip -EntryName "xl/sharedStrings.xml"
+
+        if ($sharedStringsText) {
+            [xml]$sharedStringsXml = $sharedStringsText
+            $sharedStringsNs = Get-OpenXmlNamespaceManager -Xml $sharedStringsXml
+
+            $sharedStrings = @(
+                $sharedStringsXml.SelectNodes("//main:si", $sharedStringsNs) |
+                    ForEach-Object {
+                        ($_.SelectNodes(".//main:t", $sharedStringsNs) | ForEach-Object { $_.InnerText }) -join ""
+                    }
+            )
+        }
+
+        [xml]$worksheetXml = $worksheetText
+        $worksheetNs = Get-OpenXmlNamespaceManager -Xml $worksheetXml
+
+        $rowNodes = @($worksheetXml.SelectNodes("//main:sheetData/main:row", $worksheetNs))
+
+        if ($rowNodes.Count -lt 2) {
+            return @()
+        }
+
+        $rowMaps = @{}
+
+        foreach ($rowNode in $rowNodes) {
+            $rowNumber = [int]$rowNode.GetAttribute("r")
+            $cellMap = @{}
+
+            foreach ($cellNode in @($rowNode.SelectNodes("./main:c", $worksheetNs))) {
+                $cellReference = [string]$cellNode.GetAttribute("r")
+
+                if ([string]::IsNullOrWhiteSpace($cellReference)) {
+                    continue
+                }
+
+                $columnNumber = Get-ExcelColumnNumberFromCellReference -CellReference $cellReference
+                $cellMap[$columnNumber] = Get-ExcelCellText -Cell $cellNode -SharedStrings $sharedStrings
+            }
+
+            $rowMaps[$rowNumber] = $cellMap
+        }
+
+        $headerRowNumber = ($rowMaps.Keys | Sort-Object | Select-Object -First 1)
+        $headerMap = $rowMaps[$headerRowNumber]
+        $headers = @{}
+
+        foreach ($columnNumber in ($headerMap.Keys | Sort-Object)) {
+            $header = [string]$headerMap[$columnNumber]
+
+            if (-not [string]::IsNullOrWhiteSpace($header)) {
+                $headers[$columnNumber] = $header.Trim()
+            }
+        }
+
+        $rows = New-Object System.Collections.Generic.List[object]
+
+        foreach ($rowNumber in ($rowMaps.Keys | Sort-Object)) {
+            if ($rowNumber -le $headerRowNumber) {
+                continue
+            }
+
+            $cellMap = $rowMaps[$rowNumber]
+            $object = [ordered]@{}
+            $hasValue = $false
+
+            foreach ($columnNumber in ($headers.Keys | Sort-Object)) {
+                $header = $headers[$columnNumber]
+                $value = ""
+
+                if ($cellMap.ContainsKey($columnNumber)) {
+                    $value = [string]$cellMap[$columnNumber]
+                }
+
+                if (-not [string]::IsNullOrWhiteSpace($value)) {
+                    $hasValue = $true
+                }
+
+                $object[$header] = $value
+            }
+
+            if ($hasValue) {
+                $rows.Add([pscustomobject]$object)
+            }
+        }
+
+        return @($rows)
+    }
+    finally {
+        $zip.Dispose()
+    }
+}
+
+function Import-WorksheetRows {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path,
+
+        [Parameter(Mandatory)]
+        [string]$WorksheetName
+    )
+
+    return @(Import-XlsxWorksheetRows -Path $Path -WorksheetName $WorksheetName)
+}
+
+function Import-PolicyInfoWorkbook {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return $null
+    }
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return $null
+    }
+
+    $adminRows = @(Import-WorksheetRows -Path $Path -WorksheetName "Administrative Templates")
+    $securityRows = @(Import-WorksheetRows -Path $Path -WorksheetName "Security")
+
+    $adminLookup = @{}
+    $securityLookup = @{}
+
+    foreach ($row in $adminRows) {
+        $name = [string]$row.'Policy Setting Name'
+        $key = Normalize-PolicyLookupKey -Value $name
+
+        if ($key -and -not $adminLookup.ContainsKey($key)) {
+            $adminLookup[$key] = [pscustomobject]@{
+                SourceType          = "Administrative Templates"
+                LookupName          = $name
+                PolicyPath          = [string]$row.'Policy Path'
+                RegistryInformation = [string]$row.'Registry Information'
+                HelpText            = [string]$row.'Help Text'
+            }
+        }
+    }
+
+    foreach ($row in $securityRows) {
+        $name = [string]$row.'Policy Name'
+        $key = Normalize-PolicyLookupKey -Value $name
+
+        if ($key -and -not $securityLookup.ContainsKey($key)) {
+            $securityLookup[$key] = [pscustomobject]@{
+                SourceType          = "Security"
+                LookupName          = $name
+                PolicyPath          = [string]$row.'Policy Path'
+                RegistryInformation = [string]$row.'Registry Settings'
+                HelpText            = [string]$row.'Help Text'
+            }
+        }
+    }
+
+    return [pscustomobject]@{
+        Path     = $Path
+        Admin    = $adminLookup
+        Security = $securityLookup
+    }
+}
+
+function Get-PolicyInfoForGridRow {
+    param(
+        [Parameter(Mandatory)]
+        [System.Windows.Forms.DataGridViewRow]$Row
+    )
+
+    if (-not $script:policyInfoLookup) {
+        return $null
+    }
+
+    $policyContainer = [string]$Row.Cells["PolicyContainer"].Value
+    $settingCategory = [string]$Row.Cells["SettingCategory"].Value
+    $settingName = [string]$Row.Cells["SettingName"].Value
+    $path = [string]$Row.Cells["Path"].Value
+
+    $keyCandidates = @(
+        (Normalize-PolicyLookupKey -Value $settingName),
+        (Normalize-PolicyLookupKey -Value ($path -split '\\' | Select-Object -Last 1))
+    ) | Where-Object { $_ } | Select-Object -Unique
+
+    if ($policyContainer -eq "Policies" -and $settingCategory -eq "Administrative Templates") {
+        foreach ($key in $keyCandidates) {
+            if ($script:policyInfoLookup.Admin.ContainsKey($key)) {
+                return $script:policyInfoLookup.Admin[$key]
+            }
+        }
+    }
+
+    if ($policyContainer -eq "Policies" -and $settingCategory -eq "Security Settings") {
+        foreach ($key in $keyCandidates) {
+            if ($script:policyInfoLookup.Security.ContainsKey($key)) {
+                return $script:policyInfoLookup.Security[$key]
+            }
+        }
+    }
+
+    return $null
+}
+
+function Clear-PolicyInfoPane {
+    $textInfoSource.Text = ""
+    $textInfoLookupName.Text = ""
+    $textInfoPolicyPath.Text = ""
+    $textInfoRegistry.Text = ""
+    $textInfoHelp.Text = ""
+}
+
+function Update-PolicyInfoPaneFromSelection {
+    if (-not $policyInfoPanel.Visible) {
+        return
+    }
+
+    Clear-PolicyInfoPane
+
+    if (-not $script:policyInfoLookup) {
+        $textInfoHelp.Text = "Policy information workbook has not been loaded. Select Windows11PolicySettings25H2.xlsx and run the comparison again. The workbook must contain sheets named 'Administrative Templates' and 'Security'."
+        return
+    }
+
+    if (-not $grid.CurrentRow) {
+        return
+    }
+
+    $info = Get-PolicyInfoForGridRow -Row $grid.CurrentRow
+
+    if (-not $info) {
+        $settingName = [string]$grid.CurrentRow.Cells["SettingName"].Value
+        $settingCategory = [string]$grid.CurrentRow.Cells["SettingCategory"].Value
+
+        $textInfoHelp.Text = "No policy information match was found for setting '$settingName' in category '$settingCategory'."
+        return
+    }
+
+    $textInfoSource.Text = $info.SourceType
+    $textInfoLookupName.Text = $info.LookupName
+    $textInfoPolicyPath.Text = $info.PolicyPath
+    $textInfoRegistry.Text = $info.RegistryInformation
+    $textInfoHelp.Text = $info.HelpText
+}
+
 function Get-GridDisplayColumns {
     param(
         [Parameter(Mandatory)]
@@ -299,6 +773,7 @@ function Get-GridDisplayColumns {
         "SettingType",
         "SettingName",
         "Path",
+        "Property",
         "DifferenceType",
         "$Gpo1Name Value",
         "$Gpo2Name Value"
@@ -337,7 +812,6 @@ function Convert-ObjectsToDataTable {
         [void]$dataTable.Rows.Add($dataRow)
     }
 
-    # Important: prevent PowerShell from enumerating the DataTable rows
     return ,$dataTable
 }
 
@@ -352,6 +826,19 @@ function Get-SelectedSettingContainerFilter {
 
     return [string]$comboSettingFilter.SelectedItem
 }
+
+function Get-SelectedPolicyInfoDisplay {
+    if (-not $comboPolicyInfoDisplay) {
+        return "Hide"
+    }
+
+    if ([string]::IsNullOrWhiteSpace([string]$comboPolicyInfoDisplay.SelectedItem)) {
+        return "Hide"
+    }
+
+    return [string]$comboPolicyInfoDisplay.SelectedItem
+}
+
 
 function Refresh-GridFromCsv {
     if (-not $script:lastCsvPath -or -not (Test-Path -LiteralPath $script:lastCsvPath -PathType Leaf)) {
@@ -388,14 +875,22 @@ function Refresh-GridFromCsv {
         -Rows $rows `
         -Columns $script:gridDisplayColumns
 
-    $grid.DataSource = $null
-    $grid.DataSource = $dataTable
+    $grid.SuspendLayout()
+
+    try {
+        $grid.DataSource = $null
+        $grid.DataSource = $dataTable
+    }
+    finally {
+        $grid.ResumeLayout()
+    }
 
     $script:visibleRowCount = @($rows).Count
 
     Format-Grid -Grid $grid
     Apply-GridRowColors -Grid $grid
     Update-SummaryLabel
+    Update-PolicyInfoPaneFromSelection
 }
 
 function Format-Grid {
@@ -404,23 +899,91 @@ function Format-Grid {
         [System.Windows.Forms.DataGridView]$Grid
     )
 
-    $Grid.AutoGenerateColumns = $true
-    $Grid.AutoSizeColumnsMode = "DisplayedCells"
-    $Grid.AutoSizeRowsMode = "DisplayedCells"
-    $Grid.DefaultCellStyle.WrapMode = [System.Windows.Forms.DataGridViewTriState]::True
-    $Grid.ColumnHeadersDefaultCellStyle.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
-    $Grid.RowHeadersVisible = $false
+    $Grid.SuspendLayout()
 
-    foreach ($column in $Grid.Columns) {
-        $column.SortMode = [System.Windows.Forms.DataGridViewColumnSortMode]::Automatic
+    try {
+        $Grid.AutoGenerateColumns = $true
+        $Grid.AutoSizeColumnsMode = [System.Windows.Forms.DataGridViewAutoSizeColumnsMode]::None
+        $Grid.AutoSizeRowsMode = [System.Windows.Forms.DataGridViewAutoSizeRowsMode]::None
 
-        if ($column.Name -like "* Value") {
-            $column.DefaultCellStyle.Font = New-Object System.Drawing.Font("Consolas", 9)
+        $Grid.DefaultCellStyle.WrapMode = [System.Windows.Forms.DataGridViewTriState]::False
+        $Grid.ColumnHeadersDefaultCellStyle.WrapMode = [System.Windows.Forms.DataGridViewTriState]::False
+
+        $Grid.RowTemplate.Height = 24
+        $Grid.RowHeadersVisible = $false
+        $Grid.AllowUserToResizeColumns = $true
+        $Grid.AllowUserToResizeRows = $false
+        $Grid.ScrollBars = [System.Windows.Forms.ScrollBars]::Both
+
+        $Grid.ColumnHeadersHeightSizeMode = [System.Windows.Forms.DataGridViewColumnHeadersHeightSizeMode]::DisableResizing
+        $Grid.ColumnHeadersHeight = 24
+
+        $Grid.DefaultCellStyle.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+        $Grid.ColumnHeadersDefaultCellStyle.Font = New-Object System.Drawing.Font(
+            "Segoe UI",
+            9,
+            [System.Drawing.FontStyle]::Bold
+        )
+
+        foreach ($column in $Grid.Columns) {
+            $column.SortMode = [System.Windows.Forms.DataGridViewColumnSortMode]::Automatic
+            $column.AutoSizeMode = [System.Windows.Forms.DataGridViewAutoSizeColumnMode]::None
+            $column.MinimumWidth = 50
+
+            switch ($column.Name) {
+                "PolicyScope" {
+                    $column.Width = 90
+                }
+
+                "PolicyContainer" {
+                    $column.Width = 120
+                }
+
+                "SettingCategory" {
+                    $column.Width = 160
+                }
+
+                "SettingType" {
+                    $column.Width = 160
+                }
+
+                "SettingName" {
+                    $column.Width = 300
+                }
+
+                "Path" {
+                    $column.Width = 500
+                    $column.DefaultCellStyle.Font = New-Object System.Drawing.Font("Consolas", 9)
+                }
+
+                "Property" {
+                    $column.Width = 130
+                }
+
+                "DifferenceType" {
+                    $column.Width = 120
+                }
+
+                default {
+                    if ($column.Name -like "* Value") {
+                        $column.Width = 260
+                        $column.DefaultCellStyle.Font = New-Object System.Drawing.Font("Consolas", 9)
+                    }
+                    else {
+                        $column.Width = 140
+                    }
+                }
+            }
         }
 
-        if ($column.Name -eq "Path") {
-            $column.DefaultCellStyle.Font = New-Object System.Drawing.Font("Consolas", 9)
+        foreach ($row in $Grid.Rows) {
+            if (-not $row.IsNewRow) {
+                $row.Height = 24
+            }
         }
+    }
+    finally {
+        $Grid.ResumeLayout()
     }
 }
 
@@ -434,30 +997,38 @@ function Apply-GridRowColors {
         return
     }
 
-    foreach ($row in $Grid.Rows) {
-        if ($row.IsNewRow) {
-            continue
+    $Grid.SuspendLayout()
+
+    try {
+        foreach ($row in $Grid.Rows) {
+            if ($row.IsNewRow) {
+                continue
+            }
+
+            $row.Height = 24
+            $differenceType = [string]$row.Cells["DifferenceType"].Value
+
+            switch ($differenceType) {
+                "Added" {
+                    $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::LightGreen
+                }
+
+                "Removed" {
+                    $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::Salmon
+                }
+
+                "Changed" {
+                    $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::LightSkyBlue
+                }
+
+                default {
+                    $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::White
+                }
+            }
         }
-
-        $differenceType = [string]$row.Cells["DifferenceType"].Value
-
-        switch ($differenceType) {
-            "Added" {
-                $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::LightGreen
-            }
-
-            "Removed" {
-                $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::Salmon
-            }
-
-            "Changed" {
-                $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::LightSkyBlue
-            }
-
-            default {
-                $row.DefaultCellStyle.BackColor = [System.Drawing.Color]::White
-            }
-        }
+    }
+    finally {
+        $Grid.ResumeLayout()
     }
 }
 
@@ -484,11 +1055,36 @@ function Update-SummaryLabel {
     $summaryLabel.Text = "Compared '$($script:lastResult.Gpo1Name)' to '$($script:lastResult.Gpo2Name)' | Filter: $settingFilter | Total: $totalCount | Visible: $visibleCount | Added: $addedCount | Removed: $removedCount | Changed: $changedCount | Same: $sameCount"
 }
 
+function Update-DataPaneLayout {
+    $availableWidth = [Math]::Max(300, $form.ClientSize.Width - 30)
+    $summaryHeight = 25
+    $summaryY = $form.ClientSize.Height - 35
+    $policyInfoHeight = 190
+    $gap = 6
+
+    $summaryLabel.Location = New-Object System.Drawing.Point(15, $summaryY)
+    $summaryLabel.Size = New-Object System.Drawing.Size($availableWidth, $summaryHeight)
+
+    if ($policyInfoPanel.Visible) {
+        $policyInfoY = $summaryY - $policyInfoHeight - $gap
+
+        $policyInfoPanel.Location = New-Object System.Drawing.Point(15, $policyInfoY)
+        $policyInfoPanel.Size = New-Object System.Drawing.Size($availableWidth, $policyInfoHeight)
+
+        $gridHeight = [Math]::Max(160, $policyInfoY - $grid.Top - $gap)
+        $grid.Size = New-Object System.Drawing.Size($availableWidth, $gridHeight)
+    }
+    else {
+        $gridHeight = [Math]::Max(200, $summaryY - $grid.Top - $gap)
+        $grid.Size = New-Object System.Drawing.Size($availableWidth, $gridHeight)
+    }
+}
+
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "Group Policy Comparator"
-$form.Size = New-Object System.Drawing.Size(1200, 780)
+$form.Size = New-Object System.Drawing.Size(1200, 820)
 $form.StartPosition = "CenterScreen"
-$form.MinimumSize = New-Object System.Drawing.Size(1000, 650)
+$form.MinimumSize = New-Object System.Drawing.Size(1000, 700)
 
 $font = New-Object System.Drawing.Font("Segoe UI", 9)
 $form.Font = $font
@@ -542,25 +1138,42 @@ $buttonOutput.Location = New-Object System.Drawing.Point(1060, 96)
 $buttonOutput.Size = New-Object System.Drawing.Size(110, 28)
 $buttonOutput.Anchor = "Top,Right"
 
+$labelPolicyInfoWorkbook = New-Object System.Windows.Forms.Label
+$labelPolicyInfoWorkbook.Text = "Policy Info Workbook"
+$labelPolicyInfoWorkbook.Location = New-Object System.Drawing.Point(15, 140)
+$labelPolicyInfoWorkbook.Size = New-Object System.Drawing.Size(160, 22)
+
+$textPolicyInfoWorkbook = New-Object System.Windows.Forms.TextBox
+$textPolicyInfoWorkbook.Location = New-Object System.Drawing.Point(180, 138)
+$textPolicyInfoWorkbook.Size = New-Object System.Drawing.Size(870, 24)
+$textPolicyInfoWorkbook.Anchor = "Top,Left,Right"
+$textPolicyInfoWorkbook.Text = Get-DefaultPolicyInfoWorkbookPath
+
+$buttonPolicyInfoWorkbook = New-Object System.Windows.Forms.Button
+$buttonPolicyInfoWorkbook.Text = "Browse..."
+$buttonPolicyInfoWorkbook.Location = New-Object System.Drawing.Point(1060, 136)
+$buttonPolicyInfoWorkbook.Size = New-Object System.Drawing.Size(110, 28)
+$buttonPolicyInfoWorkbook.Anchor = "Top,Right"
+
 $checkIncludeSame = New-Object System.Windows.Forms.CheckBox
 $checkIncludeSame.Text = "Include equal values in generated reports"
-$checkIncludeSame.Location = New-Object System.Drawing.Point(180, 135)
+$checkIncludeSame.Location = New-Object System.Drawing.Point(180, 175)
 $checkIncludeSame.Size = New-Object System.Drawing.Size(280, 24)
 $checkIncludeSame.Checked = $true
 
 $checkOnlyShowDifferences = New-Object System.Windows.Forms.CheckBox
 $checkOnlyShowDifferences.Text = "Only show differences"
-$checkOnlyShowDifferences.Location = New-Object System.Drawing.Point(470, 135)
+$checkOnlyShowDifferences.Location = New-Object System.Drawing.Point(470, 175)
 $checkOnlyShowDifferences.Size = New-Object System.Drawing.Size(160, 24)
 $checkOnlyShowDifferences.Checked = $false
 
 $labelSettingFilter = New-Object System.Windows.Forms.Label
 $labelSettingFilter.Text = "Show:"
-$labelSettingFilter.Location = New-Object System.Drawing.Point(645, 138)
+$labelSettingFilter.Location = New-Object System.Drawing.Point(645, 178)
 $labelSettingFilter.Size = New-Object System.Drawing.Size(45, 20)
 
 $comboSettingFilter = New-Object System.Windows.Forms.ComboBox
-$comboSettingFilter.Location = New-Object System.Drawing.Point(695, 134)
+$comboSettingFilter.Location = New-Object System.Drawing.Point(695, 174)
 $comboSettingFilter.Size = New-Object System.Drawing.Size(190, 24)
 $comboSettingFilter.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
 [void]$comboSettingFilter.Items.Add("All settings")
@@ -568,32 +1181,50 @@ $comboSettingFilter.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDo
 [void]$comboSettingFilter.Items.Add("Preference settings only")
 $comboSettingFilter.SelectedIndex = 0
 
+$labelPolicyInfoDisplay = New-Object System.Windows.Forms.Label
+$labelPolicyInfoDisplay.Text = "Policy info:"
+$labelPolicyInfoDisplay.Location = New-Object System.Drawing.Point(900, 178)
+$labelPolicyInfoDisplay.Size = New-Object System.Drawing.Size(75, 20)
+
+$comboPolicyInfoDisplay = New-Object System.Windows.Forms.ComboBox
+$comboPolicyInfoDisplay.Location = New-Object System.Drawing.Point(980, 174)
+$comboPolicyInfoDisplay.Size = New-Object System.Drawing.Size(150, 24)
+$comboPolicyInfoDisplay.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
+$comboPolicyInfoDisplay.Anchor = "Top,Right"
+
+[void]$comboPolicyInfoDisplay.Items.Add("Hide")
+[void]$comboPolicyInfoDisplay.Items.Add("Show")
+$comboPolicyInfoDisplay.SelectedIndex = 0
+
 $buttonCompare = New-Object System.Windows.Forms.Button
 $buttonCompare.Text = "Compare GPOs"
-$buttonCompare.Location = New-Object System.Drawing.Point(15, 170)
+$buttonCompare.Location = New-Object System.Drawing.Point(15, 210)
 $buttonCompare.Size = New-Object System.Drawing.Size(145, 34)
 
 $buttonOpenCsv = New-Object System.Windows.Forms.Button
 $buttonOpenCsv.Text = "Open CSV"
-$buttonOpenCsv.Location = New-Object System.Drawing.Point(170, 170)
+$buttonOpenCsv.Location = New-Object System.Drawing.Point(170, 210)
 $buttonOpenCsv.Size = New-Object System.Drawing.Size(110, 34)
 $buttonOpenCsv.Enabled = $false
 
 $buttonOpenHtml = New-Object System.Windows.Forms.Button
 $buttonOpenHtml.Text = "Open HTML"
-$buttonOpenHtml.Location = New-Object System.Drawing.Point(290, 170)
+$buttonOpenHtml.Location = New-Object System.Drawing.Point(290, 210)
 $buttonOpenHtml.Size = New-Object System.Drawing.Size(110, 34)
 $buttonOpenHtml.Enabled = $false
 
 $statusLabel = New-Object System.Windows.Forms.Label
 $statusLabel.Text = "Select two GPO backup folders to begin."
-$statusLabel.Location = New-Object System.Drawing.Point(420, 178)
+$statusLabel.Location = New-Object System.Drawing.Point(420, 218)
 $statusLabel.Size = New-Object System.Drawing.Size(750, 22)
 $statusLabel.Anchor = "Top,Left,Right"
 
 $grid = New-Object System.Windows.Forms.DataGridView
-$grid.Location = New-Object System.Drawing.Point(15, 220)
-$grid.Size = New-Object System.Drawing.Size(1155, 455)
+$grid.Location = New-Object System.Drawing.Point(15, 260)
+$grid.Size = New-Object System.Drawing.Size(
+    ($form.ClientSize.Width - 30),
+    ($form.ClientSize.Height - 310)
+)
 $grid.Anchor = "Top,Bottom,Left,Right"
 $grid.ReadOnly = $true
 $grid.AllowUserToAddRows = $false
@@ -601,22 +1232,106 @@ $grid.AllowUserToDeleteRows = $false
 $grid.SelectionMode = "FullRowSelect"
 $grid.MultiSelect = $true
 $grid.AutoGenerateColumns = $true
-$grid.AutoSizeColumnsMode = "DisplayedCells"
+$grid.AutoSizeColumnsMode = [System.Windows.Forms.DataGridViewAutoSizeColumnsMode]::None
+$grid.AutoSizeRowsMode = [System.Windows.Forms.DataGridViewAutoSizeRowsMode]::None
+$grid.DefaultCellStyle.WrapMode = [System.Windows.Forms.DataGridViewTriState]::False
+$grid.ScrollBars = [System.Windows.Forms.ScrollBars]::Both
 $grid.BackgroundColor = [System.Drawing.Color]::White
 $grid.BorderStyle = [System.Windows.Forms.BorderStyle]::Fixed3D
 $grid.ClipboardCopyMode = [System.Windows.Forms.DataGridViewClipboardCopyMode]::EnableAlwaysIncludeHeaderText
 
+$policyInfoPanel = New-Object System.Windows.Forms.Panel
+$policyInfoPanel.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+$policyInfoPanel.Visible = $false
+$policyInfoPanel.Anchor = "Left,Right,Bottom"
+
+$labelInfoSource = New-Object System.Windows.Forms.Label
+$labelInfoSource.Text = "Source"
+$labelInfoSource.Location = New-Object System.Drawing.Point(8, 8)
+$labelInfoSource.Size = New-Object System.Drawing.Size(90, 20)
+
+$textInfoSource = New-Object System.Windows.Forms.TextBox
+$textInfoSource.Location = New-Object System.Drawing.Point(105, 6)
+$textInfoSource.Size = New-Object System.Drawing.Size(180, 22)
+$textInfoSource.ReadOnly = $true
+
+$labelInfoLookupName = New-Object System.Windows.Forms.Label
+$labelInfoLookupName.Text = "Matched Name"
+$labelInfoLookupName.Location = New-Object System.Drawing.Point(300, 8)
+$labelInfoLookupName.Size = New-Object System.Drawing.Size(95, 20)
+
+$textInfoLookupName = New-Object System.Windows.Forms.TextBox
+$textInfoLookupName.Location = New-Object System.Drawing.Point(400, 6)
+$textInfoLookupName.Size = New-Object System.Drawing.Size(745, 22)
+$textInfoLookupName.Anchor = "Top,Left,Right"
+$textInfoLookupName.ReadOnly = $true
+
+$labelInfoPolicyPath = New-Object System.Windows.Forms.Label
+$labelInfoPolicyPath.Text = "Policy Path"
+$labelInfoPolicyPath.Location = New-Object System.Drawing.Point(8, 38)
+$labelInfoPolicyPath.Size = New-Object System.Drawing.Size(90, 20)
+
+$textInfoPolicyPath = New-Object System.Windows.Forms.TextBox
+$textInfoPolicyPath.Location = New-Object System.Drawing.Point(105, 36)
+$textInfoPolicyPath.Size = New-Object System.Drawing.Size(1040, 22)
+$textInfoPolicyPath.Anchor = "Top,Left,Right"
+$textInfoPolicyPath.ReadOnly = $true
+
+$labelInfoRegistry = New-Object System.Windows.Forms.Label
+$labelInfoRegistry.Text = "Registry"
+$labelInfoRegistry.Location = New-Object System.Drawing.Point(8, 68)
+$labelInfoRegistry.Size = New-Object System.Drawing.Size(90, 20)
+
+$textInfoRegistry = New-Object System.Windows.Forms.TextBox
+$textInfoRegistry.Location = New-Object System.Drawing.Point(105, 66)
+$textInfoRegistry.Size = New-Object System.Drawing.Size(1040, 44)
+$textInfoRegistry.Anchor = "Top,Left,Right"
+$textInfoRegistry.Multiline = $true
+$textInfoRegistry.ScrollBars = [System.Windows.Forms.ScrollBars]::Vertical
+$textInfoRegistry.ReadOnly = $true
+
+$labelInfoHelp = New-Object System.Windows.Forms.Label
+$labelInfoHelp.Text = "Help Text"
+$labelInfoHelp.Location = New-Object System.Drawing.Point(8, 120)
+$labelInfoHelp.Size = New-Object System.Drawing.Size(90, 20)
+
+$textInfoHelp = New-Object System.Windows.Forms.TextBox
+$textInfoHelp.Location = New-Object System.Drawing.Point(105, 118)
+$textInfoHelp.Size = New-Object System.Drawing.Size(1040, 62)
+$textInfoHelp.Anchor = "Top,Bottom,Left,Right"
+$textInfoHelp.Multiline = $true
+$textInfoHelp.ScrollBars = [System.Windows.Forms.ScrollBars]::Vertical
+$textInfoHelp.ReadOnly = $true
+
+$policyInfoPanel.Controls.AddRange(@(
+    $labelInfoSource,
+    $textInfoSource,
+    $labelInfoLookupName,
+    $textInfoLookupName,
+    $labelInfoPolicyPath,
+    $textInfoPolicyPath,
+    $labelInfoRegistry,
+    $textInfoRegistry,
+    $labelInfoHelp,
+    $textInfoHelp
+))
+
 $summaryLabel = New-Object System.Windows.Forms.Label
 $summaryLabel.Text = ""
-$summaryLabel.Location = New-Object System.Drawing.Point(15, 695)
-$summaryLabel.Size = New-Object System.Drawing.Size(1155, 25)
+$summaryLabel.Location = New-Object System.Drawing.Point(15, ($form.ClientSize.Height - 35))
+$summaryLabel.Size = New-Object System.Drawing.Size(($form.ClientSize.Width - 30), 25)
 $summaryLabel.Anchor = "Bottom,Left,Right"
+
+$form.Add_Resize({
+    Update-DataPaneLayout
+})
 
 $script:lastCsvPath = $null
 $script:lastHtmlPath = $null
 $script:lastResult = $null
 $script:gridDisplayColumns = $null
 $script:visibleRowCount = 0
+$script:policyInfoLookup = $null
 
 $buttonGpo1.Add_Click({
     try {
@@ -705,6 +1420,30 @@ $buttonOutput.Add_Click({
     }
 })
 
+$buttonPolicyInfoWorkbook.Add_Click({
+    try {
+        $initialFolder = Get-FirstExistingFolder -CandidatePath @(
+            (Split-Path -Parent $textPolicyInfoWorkbook.Text)
+            $ScriptRoot
+            [Environment]::GetFolderPath("Desktop")
+        )
+
+        $workbookPath = Select-WorkbookFile -InitialDirectory $initialFolder
+
+        if (-not [string]::IsNullOrWhiteSpace($workbookPath)) {
+            $textPolicyInfoWorkbook.Text = $workbookPath
+        }
+    }
+    catch {
+        [System.Windows.Forms.MessageBox]::Show(
+            $_.Exception.Message,
+            "Workbook Selection Error",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Error
+        )
+    }
+})
+
 $checkOnlyShowDifferences.Add_CheckedChanged({
     if ($script:lastCsvPath) {
         Refresh-GridFromCsv
@@ -717,9 +1456,39 @@ $comboSettingFilter.Add_SelectedIndexChanged({
     }
 })
 
+$comboPolicyInfoDisplay.Add_SelectedIndexChanged({
+    $policyInfoPanel.Visible = ((Get-SelectedPolicyInfoDisplay) -eq "Show")
+    Update-DataPaneLayout
+
+    if ((Get-SelectedPolicyInfoDisplay) -eq "Show") {
+        try {
+            if (-not $script:policyInfoLookup) {
+                if (-not [string]::IsNullOrWhiteSpace($textPolicyInfoWorkbook.Text) -and
+                    (Test-Path -LiteralPath $textPolicyInfoWorkbook.Text -PathType Leaf)) {
+
+                    $script:policyInfoLookup = Import-PolicyInfoWorkbook -Path $textPolicyInfoWorkbook.Text
+                }
+            }
+
+            Update-PolicyInfoPaneFromSelection
+        }
+        catch {
+            Clear-PolicyInfoPane
+            $textInfoHelp.Text = "Unable to load policy information workbook: $($_.Exception.Message)"
+        }
+    }
+    else {
+        Clear-PolicyInfoPane
+    }
+})
+
 $grid.Add_DataBindingComplete({
     Format-Grid -Grid $grid
     Apply-GridRowColors -Grid $grid
+})
+
+$grid.Add_SelectionChanged({
+    Update-PolicyInfoPaneFromSelection
 })
 
 $buttonCompare.Add_Click({
@@ -735,7 +1504,9 @@ $buttonCompare.Add_Click({
         $script:lastHtmlPath = $null
         $script:gridDisplayColumns = $null
         $script:visibleRowCount = 0
+        $script:policyInfoLookup = $null
 
+        Clear-PolicyInfoPane
         $summaryLabel.Text = ""
         $statusLabel.Text = "Running comparison..."
 
@@ -750,6 +1521,24 @@ $buttonCompare.Add_Click({
         if ([string]::IsNullOrWhiteSpace($textOutput.Text)) {
             throw "Select an output folder."
         }
+
+		if ((Get-SelectedPolicyInfoDisplay) -eq "Show") {
+			if ([string]::IsNullOrWhiteSpace($textPolicyInfoWorkbook.Text)) {
+				throw "Policy info is set to Show, but no policy information workbook was selected."
+			}
+
+			if (-not (Test-Path -LiteralPath $textPolicyInfoWorkbook.Text -PathType Leaf)) {
+				throw "Policy info is set to Show, but the selected workbook does not exist: $($textPolicyInfoWorkbook.Text)"
+			}
+
+			$statusLabel.Text = "Loading policy information workbook..."
+			$script:policyInfoLookup = Import-PolicyInfoWorkbook -Path $textPolicyInfoWorkbook.Text
+		}
+		else {
+			$script:policyInfoLookup = $null
+		}
+
+        $statusLabel.Text = "Running comparison..."
 
         $result = Invoke-GpoComparison `
             -Gpo1BackupFolder $textGpo1.Text `
@@ -809,16 +1598,24 @@ $form.Controls.AddRange(@(
     $labelOutput,
     $textOutput,
     $buttonOutput,
+    $labelPolicyInfoWorkbook,
+    $textPolicyInfoWorkbook,
+    $buttonPolicyInfoWorkbook,
     $checkIncludeSame,
     $checkOnlyShowDifferences,
     $labelSettingFilter,
     $comboSettingFilter,
+    $labelPolicyInfoDisplay,
+    $comboPolicyInfoDisplay,
     $buttonCompare,
     $buttonOpenCsv,
     $buttonOpenHtml,
     $statusLabel,
     $grid,
+    $policyInfoPanel,
     $summaryLabel
 ))
+
+Update-DataPaneLayout
 
 [void]$form.ShowDialog()
