@@ -376,20 +376,6 @@ function Get-ZipEntryText {
     }
 }
 
-function Get-OpenXmlNamespaceManager {
-    param(
-        [Parameter(Mandatory)]
-        [xml]$Xml
-    )
-
-    $namespaceManager = New-Object System.Xml.XmlNamespaceManager($Xml.NameTable)
-    $namespaceManager.AddNamespace("main", "http://schemas.openxmlformats.org/spreadsheetml/2006/main")
-    $namespaceManager.AddNamespace("rel", "http://schemas.openxmlformats.org/package/2006/relationships")
-    $namespaceManager.AddNamespace("r", "http://schemas.openxmlformats.org/officeDocument/2006/relationships")
-
-    return $namespaceManager
-}
-
 function Convert-ExcelColumnNameToNumber {
     param(
         [Parameter(Mandatory)]
