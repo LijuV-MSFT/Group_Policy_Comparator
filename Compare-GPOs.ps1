@@ -7,15 +7,15 @@ This script contains the core comparison engine for Group Policy backup comparis
 
 It can be dot-sourced from a UI script:
 
-    . .\Compare-GPOs.ps1
+. .\Compare-GPOs.ps1
 
 Then called with:
 
-    Invoke-GpoComparison `
-        -Gpo1BackupFolder "C:\GPOBackups\GPO1" `
-        -Gpo2BackupFolder "C:\GPOBackups\GPO2" `
-        -OutputFolder "C:\Temp\GPO_Comparison" `
-        -IncludeSame
+Invoke-GpoComparison `
+    -Gpo1BackupFolder "C:\GPOBackups\GPO1" `
+    -Gpo2BackupFolder "C:\GPOBackups\GPO2" `
+    -OutputFolder "C:\Temp\GPO_Comparison" `
+    -IncludeSame
 
 .NOTES
 Expected input:
@@ -90,6 +90,28 @@ function Get-SettingTypeSortOrder {
     }
 }
 
+function Get-GpoValueColumnNames {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Gpo1Name,
+
+        [Parameter(Mandatory)]
+        [string]$Gpo2Name
+    )
+
+    if ($Gpo1Name -eq $Gpo2Name) {
+        return [pscustomobject]@{
+            Gpo1ValueColumn = "$Gpo1Name Reference Value"
+            Gpo2ValueColumn = "$Gpo2Name Comparison Value"
+        }
+    }
+
+    return [pscustomobject]@{
+        Gpo1ValueColumn = "$Gpo1Name Value"
+        Gpo2ValueColumn = "$Gpo2Name Value"
+    }
+}
+
 function Get-FirstSettingValue {
     param(
         $Object
@@ -120,11 +142,10 @@ function ConvertTo-SemicolonList {
     )
 
     @(
-        $InputObject | ForEach-Object {
-            & $ValueScript $_
-        } | Where-Object {
-            $_
-        } | Sort-Object
+        $InputObject |
+            ForEach-Object { & $ValueScript $_ } |
+            Where-Object { $_ } |
+            Sort-Object
     ) -join ';'
 }
 
@@ -159,7 +180,14 @@ function Resolve-GpoReportXmlPath {
         return $directPath
     }
 
-    $matches = @(Get-ChildItem -LiteralPath $FolderPath -Recurse -Filter "gpreport.xml" -File -ErrorAction SilentlyContinue)
+    $matches = @(
+        Get-ChildItem `
+            -LiteralPath $FolderPath `
+            -Recurse `
+            -Filter "gpreport.xml" `
+            -File `
+            -ErrorAction SilentlyContinue
+    )
 
     if ($matches.Count -eq 0) {
         throw "No gpreport.xml file found under: $FolderPath"
@@ -183,7 +211,6 @@ function Get-GpoExtractedObjects {
     $GPOName = $GPOXMLData.GPO.Name
 
     $AllScripts = @()
-
     $AllAccountPolicies = @()
     $AllAuditPolicies = @()
     $AllAdvancedAuditSettings = @()
@@ -191,20 +218,15 @@ function Get-GpoExtractedObjects {
     $AllSecurityOptions = @()
     $AllEventLogSettings = @()
     $AllRestrictedGroups = @()
-
     $AllPolicySettings = @()
     $AllRegistrySettings = @()
 
     foreach ($PolicyScopeName in @("Computer", "User")) {
-
         $PolicyScopeNode = $GPOXMLData.GPO.$PolicyScopeName
 
         foreach ($extension in @($PolicyScopeNode.ExtensionData)) {
-
             switch ($extension.Name) {
-
                 "Scripts" {
-
                     $Scripts = foreach ($script in @($extension.Extension.Script)) {
                         [pscustomobject]@{
                             PolicyScope     = $PolicyScopeName
@@ -223,7 +245,6 @@ function Get-GpoExtractedObjects {
                 }
 
                 "Security" {
-
                     $AccountPolicies = foreach ($account in @($extension.Extension.Account)) {
                         [pscustomobject]@{
                             PolicyScope     = $PolicyScopeName
@@ -255,15 +276,13 @@ function Get-GpoExtractedObjects {
                             SettingCategory = "Security Settings"
                             SettingType     = "User Rights"
                             Name            = $right.Name
-                            Member          = ConvertTo-SemicolonList -InputObject $right.Member -ValueScript {
-                                param($x)
-                                $x.SID.'#text'
-                            }
+                            Member          = ConvertTo-SemicolonList `
+                                -InputObject $right.Member `
+                                -ValueScript { param($x) $x.SID.'#text' }
                         }
                     }
 
                     $SecurityOptions = foreach ($setting in @($extension.Extension.SecurityOptions)) {
-
                         $display = $setting.Display
 
                         $displayValue = if ($display.DisplayString) {
@@ -277,9 +296,8 @@ function Get-GpoExtractedObjects {
                         }
                         elseif ($display.DisplayFields) {
                             @(
-                                $display.DisplayFields.Field | ForEach-Object {
-                                    "$($_.Name):$($_.Value)"
-                                }
+                                $display.DisplayFields.Field |
+                                    ForEach-Object { "$($_.Name):$($_.Value)" }
                             ) -join '; '
                         }
                         else {
@@ -326,18 +344,15 @@ function Get-GpoExtractedObjects {
                     }
 
                     $RestrictedGroups = foreach ($group in @($extension.Extension.RestrictedGroups)) {
-
                         $groupName = $group.GroupName.Name.'#text'
 
-                        $members = ConvertTo-SemicolonList -InputObject $group.Member -ValueScript {
-                            param($x)
-                            $x.Name.'#text'
-                        }
+                        $members = ConvertTo-SemicolonList `
+                            -InputObject $group.Member `
+                            -ValueScript { param($x) $x.Name.'#text' }
 
-                        $memberOf = ConvertTo-SemicolonList -InputObject $group.Memberof -ValueScript {
-                            param($x)
-                            $x.Name.'#text'
-                        }
+                        $memberOf = ConvertTo-SemicolonList `
+                            -InputObject $group.Memberof `
+                            -ValueScript { param($x) $x.Name.'#text' }
 
                         [pscustomobject]@{
                             PolicyScope     = $PolicyScopeName
@@ -359,7 +374,6 @@ function Get-GpoExtractedObjects {
                 }
 
                 "Advanced Audit Configuration" {
-
                     $AdvancedAuditSettings = foreach ($auditSetting in @($extension.Extension.AuditSetting)) {
                         [pscustomobject]@{
                             PolicyScope     = $PolicyScopeName
@@ -379,7 +393,6 @@ function Get-GpoExtractedObjects {
                 }
 
                 "Registry" {
-
                     $PolicySettings = foreach ($policy in @($extension.Extension.Policy)) {
                         [pscustomobject]@{
                             PolicyScope     = $PolicyScopeName
@@ -398,7 +411,6 @@ function Get-GpoExtractedObjects {
                 }
 
                 "Windows Registry" {
-
                     $RegistrySettings = foreach ($registry in @($extension.Extension.RegistrySettings.Registry)) {
                         [pscustomobject]@{
                             PolicyScope     = $PolicyScopeName
@@ -466,7 +478,7 @@ function Compare-ObjectSet {
         [switch]$IncludeSame
     )
 
-    $ReferenceObject  = @($ReferenceObject)
+    $ReferenceObject = @($ReferenceObject)
     $DifferenceObject = @($DifferenceObject)
 
     $refHash = @{}
@@ -474,6 +486,7 @@ function Compare-ObjectSet {
 
     foreach ($item in $ReferenceObject) {
         $key = & $KeyScript $item
+
         if ($key) {
             $refHash[$key] = $item
         }
@@ -481,6 +494,7 @@ function Compare-ObjectSet {
 
     foreach ($item in $DifferenceObject) {
         $key = & $KeyScript $item
+
         if ($key) {
             $difHash[$key] = $item
         }
@@ -491,7 +505,6 @@ function Compare-ObjectSet {
         Sort-Object -Unique
 
     foreach ($key in $allKeys) {
-
         $ref = $refHash[$key]
         $dif = $difHash[$key]
 
@@ -515,9 +528,7 @@ function Compare-ObjectSet {
         }
 
         if (-not $ref) {
-
             foreach ($property in $CompareProperties) {
-
                 $row = [ordered]@{
                     PolicyScope              = $dif.PolicyScope
                     PolicyContainer          = $dif.PolicyContainer
@@ -536,7 +547,7 @@ function Compare-ObjectSet {
 
                 $row[$Gpo1ValueColumn] = $null
                 $row[$Gpo2ValueColumn] = $dif.$property
-                $row["ObjectType"]     = $ObjectType
+                $row["ObjectType"] = $ObjectType
 
                 [pscustomobject]$row
             }
@@ -545,9 +556,7 @@ function Compare-ObjectSet {
         }
 
         if (-not $dif) {
-
             foreach ($property in $CompareProperties) {
-
                 $row = [ordered]@{
                     PolicyScope              = $ref.PolicyScope
                     PolicyContainer          = $ref.PolicyContainer
@@ -566,7 +575,7 @@ function Compare-ObjectSet {
 
                 $row[$Gpo1ValueColumn] = $ref.$property
                 $row[$Gpo2ValueColumn] = $null
-                $row["ObjectType"]     = $ObjectType
+                $row["ObjectType"] = $ObjectType
 
                 [pscustomobject]$row
             }
@@ -575,13 +584,12 @@ function Compare-ObjectSet {
         }
 
         foreach ($property in $CompareProperties) {
-
             $refValue = $ref.$property
             $difValue = $dif.$property
+
             $reportSource = if ($ref) { $ref } else { $dif }
 
             if ("$refValue" -ne "$difValue") {
-
                 $row = [ordered]@{
                     PolicyScope              = $reportSource.PolicyScope
                     PolicyContainer          = $reportSource.PolicyContainer
@@ -600,12 +608,11 @@ function Compare-ObjectSet {
 
                 $row[$Gpo1ValueColumn] = $refValue
                 $row[$Gpo2ValueColumn] = $difValue
-                $row["ObjectType"]     = $ObjectType
+                $row["ObjectType"] = $ObjectType
 
                 [pscustomobject]$row
             }
             elseif ($IncludeSame) {
-
                 $row = [ordered]@{
                     PolicyScope              = $reportSource.PolicyScope
                     PolicyContainer          = $reportSource.PolicyContainer
@@ -624,7 +631,7 @@ function Compare-ObjectSet {
 
                 $row[$Gpo1ValueColumn] = $refValue
                 $row[$Gpo2ValueColumn] = $difValue
-                $row["ObjectType"]     = $ObjectType
+                $row["ObjectType"] = $ObjectType
 
                 [pscustomobject]$row
             }
@@ -693,202 +700,58 @@ function Export-GpoDifferenceHtml {
 
     $generatedOn = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
 
-    $totalCount   = @($Differences).Count
-    $addedCount   = @($Differences | Where-Object DifferenceType -eq "Added").Count
+    $totalCount = @($Differences).Count
+    $addedCount = @($Differences | Where-Object DifferenceType -eq "Added").Count
     $removedCount = @($Differences | Where-Object DifferenceType -eq "Removed").Count
     $changedCount = @($Differences | Where-Object DifferenceType -eq "Changed").Count
-    $sameCount    = @($Differences | Where-Object DifferenceType -eq "Same").Count
+    $sameCount = @($Differences | Where-Object DifferenceType -eq "Same").Count
 
     $html = New-Object System.Text.StringBuilder
 
     [void]$html.AppendLine("<!DOCTYPE html>")
-    [void]$html.AppendLine("<html lang='en-US'>")
+    [void]$html.AppendLine("<html>")
     [void]$html.AppendLine("<head>")
-    [void]$html.AppendLine("<meta charset='utf-8'>")
+    [void]$html.AppendLine("<meta charset='utf-8' />")
     [void]$html.AppendLine("<title>GPO Difference Report</title>")
     [void]$html.AppendLine("<style>")
-    [void]$html.AppendLine(@"
-body {
-    background-color: #ffffff;
-    color: #000000;
-    font-family: 'Segoe UI', Arial, sans-serif;
-    font-size: 13px;
-    margin: 0;
-    padding: 0;
-}
-
-.header {
-    border-bottom: 1px solid #999999;
-    padding: 16px 20px;
-    background-color: #ffffff;
-}
-
-.header h1 {
-    margin: 0 0 8px 0;
-    color: #333333;
-    font-size: 22px;
-}
-
-.header .meta {
-    color: #333333;
-    line-height: 1.5em;
-}
-
-.summary {
-    display: flex;
-    gap: 12px;
-    padding: 12px 20px;
-    border-bottom: 1px solid #cccccc;
-    background: #f7f7f7;
-    flex-wrap: wrap;
-}
-
-.summary-card {
-    border: 1px solid #cccccc;
-    background: #ffffff;
-    padding: 8px 12px;
-    min-width: 130px;
-}
-
-.summary-card .number {
-    font-size: 20px;
-    font-weight: bold;
-}
-
-.summary-card .label {
-    color: #555555;
-}
-
-.legend {
-    padding: 10px 20px;
-    border-bottom: 1px solid #cccccc;
-}
-
-.legend span {
-    display: inline-block;
-    margin-right: 16px;
-    padding: 4px 8px;
-    border: 1px solid #bbbbbb;
-}
-
-.diff-added {
-    background-color: lightgreen;
-}
-
-.diff-removed {
-    background-color: salmon;
-}
-
-.diff-changed {
-    background-color: lightskyblue;
-}
-
-.diff-same {
-    background-color: #ffffff;
-}
-
-.scope {
-    margin: 12px 20px;
-    border: 1px solid #bbbbbb;
-}
-
-.scope > summary {
-    background-color: #fef7d6;
-    padding: 8px 10px;
-    font-weight: bold;
-    cursor: pointer;
-}
-
-.container {
-    margin: 8px 12px;
-    border: 1px solid #bbbbbb;
-}
-
-.container > summary {
-    background-color: #a0bacb;
-    padding: 8px 10px;
-    font-weight: bold;
-    cursor: pointer;
-}
-
-.category {
-    margin: 8px 12px;
-    border: 1px solid #bbbbbb;
-}
-
-.category > summary {
-    background-color: #c0d2de;
-    padding: 8px 10px;
-    font-weight: bold;
-    cursor: pointer;
-}
-
-.settingtype {
-    margin: 8px 12px;
-    border: 1px solid #bbbbbb;
-}
-
-.settingtype > summary {
-    background-color: #d9e3ea;
-    padding: 8px 10px;
-    font-weight: bold;
-    cursor: pointer;
-}
-
-table {
-    border-collapse: collapse;
-    table-layout: fixed;
-    width: 100%;
-    font-size: 12px;
-}
-
-th {
-    border-bottom: 1px solid #999999;
-    background: #e8e8e8;
-    text-align: left;
-    padding: 6px;
-}
-
-td {
-    border-bottom: 1px solid #dddddd;
-    padding: 6px;
-    vertical-align: top;
-    word-break: break-word;
-}
-
-.value-column {
-    font-family: Consolas, monospace;
-}
-
-.path-column {
-    font-family: Consolas, monospace;
-}
-
-.footer {
-    padding: 12px 20px;
-    color: #555555;
-    font-size: 12px;
-}
-"@)
+    [void]$html.AppendLine("body { font-family: Segoe UI, Arial, sans-serif; margin: 20px; color: #222; }")
+    [void]$html.AppendLine("h1 { font-size: 24px; margin-bottom: 6px; }")
+    [void]$html.AppendLine("h2 { font-size: 20px; margin-top: 22px; border-bottom: 1px solid #ccc; padding-bottom: 4px; }")
+    [void]$html.AppendLine("h3 { font-size: 17px; margin-top: 18px; }")
+    [void]$html.AppendLine("h4 { font-size: 15px; margin-top: 14px; }")
+    [void]$html.AppendLine(".meta { margin-bottom: 16px; }")
+    [void]$html.AppendLine(".summary { display: flex; gap: 10px; margin: 16px 0; flex-wrap: wrap; }")
+    [void]$html.AppendLine(".card { border: 1px solid #ccc; border-radius: 4px; padding: 8px 12px; min-width: 110px; background: #f7f7f7; }")
+    [void]$html.AppendLine(".card .number { font-size: 20px; font-weight: 600; }")
+    [void]$html.AppendLine(".legend { margin: 12px 0; }")
+    [void]$html.AppendLine(".legend span { display: inline-block; margin-right: 12px; padding: 3px 8px; border: 1px solid #aaa; }")
+    [void]$html.AppendLine("table { border-collapse: collapse; width: 100%; margin-bottom: 20px; table-layout: auto; }")
+    [void]$html.AppendLine("th, td { border: 1px solid #ccc; padding: 5px 7px; vertical-align: top; font-size: 12px; }")
+    [void]$html.AppendLine("th { background: #eaeaea; text-align: left; position: sticky; top: 0; }")
+    [void]$html.AppendLine(".diff-added { background: #90ee90; }")
+    [void]$html.AppendLine(".diff-removed { background: #fa8072; }")
+    [void]$html.AppendLine(".diff-changed { background: #87cefa; }")
+    [void]$html.AppendLine(".diff-same { background: #ffffff; }")
+    [void]$html.AppendLine(".path-column, .value-column { font-family: Consolas, monospace; white-space: pre-wrap; }")
+    [void]$html.AppendLine("details { margin-bottom: 8px; }")
+    [void]$html.AppendLine("summary { cursor: pointer; font-weight: 600; margin: 6px 0; }")
     [void]$html.AppendLine("</style>")
     [void]$html.AppendLine("</head>")
     [void]$html.AppendLine("<body>")
 
-    [void]$html.AppendLine("<div class='header'>")
     [void]$html.AppendLine("<h1>GPO Difference Report</h1>")
     [void]$html.AppendLine("<div class='meta'>")
-    [void]$html.AppendLine("<strong>Reference GPO:</strong> $(ConvertTo-HtmlEncodedText $Gpo1Name)<br>")
-    [void]$html.AppendLine("<strong>Comparison GPO:</strong> $(ConvertTo-HtmlEncodedText $Gpo2Name)<br>")
-    [void]$html.AppendLine("<strong>Generated:</strong> $(ConvertTo-HtmlEncodedText $generatedOn)")
-    [void]$html.AppendLine("</div>")
+    [void]$html.AppendLine("<div><strong>Reference GPO:</strong> $(ConvertTo-HtmlEncodedText $Gpo1Name)</div>")
+    [void]$html.AppendLine("<div><strong>Comparison GPO:</strong> $(ConvertTo-HtmlEncodedText $Gpo2Name)</div>")
+    [void]$html.AppendLine("<div><strong>Generated:</strong> $(ConvertTo-HtmlEncodedText $generatedOn)</div>")
     [void]$html.AppendLine("</div>")
 
     [void]$html.AppendLine("<div class='summary'>")
-    [void]$html.AppendLine("<div class='summary-card'><div class='number'>$totalCount</div><div class='label'>Total rows</div></div>")
-    [void]$html.AppendLine("<div class='summary-card diff-added'><div class='number'>$addedCount</div><div class='label'>Added</div></div>")
-    [void]$html.AppendLine("<div class='summary-card diff-removed'><div class='number'>$removedCount</div><div class='label'>Removed</div></div>")
-    [void]$html.AppendLine("<div class='summary-card diff-changed'><div class='number'>$changedCount</div><div class='label'>Changed</div></div>")
-    [void]$html.AppendLine("<div class='summary-card diff-same'><div class='number'>$sameCount</div><div class='label'>Same</div></div>")
+    [void]$html.AppendLine("<div class='card'><div class='number'>$totalCount</div><div>Total rows</div></div>")
+    [void]$html.AppendLine("<div class='card'><div class='number'>$addedCount</div><div>Added</div></div>")
+    [void]$html.AppendLine("<div class='card'><div class='number'>$removedCount</div><div>Removed</div></div>")
+    [void]$html.AppendLine("<div class='card'><div class='number'>$changedCount</div><div>Changed</div></div>")
+    [void]$html.AppendLine("<div class='card'><div class='number'>$sameCount</div><div>Same</div></div>")
     [void]$html.AppendLine("</div>")
 
     [void]$html.AppendLine("<div class='legend'>")
@@ -910,8 +773,7 @@ td {
         Group-Object PolicyScope
 
     foreach ($scopeGroup in $groupedByScope) {
-
-        [void]$html.AppendLine("<details class='scope' open>")
+        [void]$html.AppendLine("<details open>")
         [void]$html.AppendLine("<summary>$(ConvertTo-HtmlEncodedText $scopeGroup.Name) Configuration</summary>")
 
         $containerGroups = $scopeGroup.Group |
@@ -919,8 +781,7 @@ td {
             Group-Object PolicyContainer
 
         foreach ($containerGroup in $containerGroups) {
-
-            [void]$html.AppendLine("<details class='container' open>")
+            [void]$html.AppendLine("<details open>")
             [void]$html.AppendLine("<summary>$(ConvertTo-HtmlEncodedText $containerGroup.Name)</summary>")
 
             $categoryGroups = $containerGroup.Group |
@@ -928,8 +789,7 @@ td {
                 Group-Object SettingCategory
 
             foreach ($categoryGroup in $categoryGroups) {
-
-                [void]$html.AppendLine("<details class='category' open>")
+                [void]$html.AppendLine("<details open>")
                 [void]$html.AppendLine("<summary>$(ConvertTo-HtmlEncodedText $categoryGroup.Name)</summary>")
 
                 $typeGroups = $categoryGroup.Group |
@@ -937,10 +797,7 @@ td {
                     Group-Object SettingType
 
                 foreach ($typeGroup in $typeGroups) {
-
-                    [void]$html.AppendLine("<details class='settingtype' open>")
-                    [void]$html.AppendLine("<summary>$(ConvertTo-HtmlEncodedText $typeGroup.Name)</summary>")
-
+                    [void]$html.AppendLine("<h4>$(ConvertTo-HtmlEncodedText $typeGroup.Name)</h4>")
                     [void]$html.AppendLine("<table>")
                     [void]$html.AppendLine("<thead>")
                     [void]$html.AppendLine("<tr>")
@@ -954,15 +811,20 @@ td {
                     [void]$html.AppendLine("<tbody>")
 
                     foreach ($row in $typeGroup.Group) {
-
                         $cssClass = Get-DifferenceCssClass -DifferenceType $row.DifferenceType
                         $prefix = Get-DifferencePrefix -DifferenceType $row.DifferenceType
 
                         [void]$html.AppendLine("<tr class='$cssClass'>")
 
                         foreach ($column in $Columns) {
+                            $property = $row.PSObject.Properties[$column]
 
-                            $value = $row.PSObject.Properties[$column].Value
+                            $value = if ($property) {
+                                $property.Value
+                            }
+                            else {
+                                $null
+                            }
 
                             if ($column -eq "DifferenceType") {
                                 $value = "$prefix$value"
@@ -986,7 +848,6 @@ td {
 
                     [void]$html.AppendLine("</tbody>")
                     [void]$html.AppendLine("</table>")
-                    [void]$html.AppendLine("</details>")
                 }
 
                 [void]$html.AppendLine("</details>")
@@ -998,7 +859,8 @@ td {
         [void]$html.AppendLine("</details>")
     }
 
-    [void]$html.AppendLine("<div class='footer'>Generated by Compare-GPOs.ps1</div>")
+    [void]$html.AppendLine("<hr />")
+    [void]$html.AppendLine("<div>Generated by Compare-GPOs.ps1</div>")
     [void]$html.AppendLine("</body>")
     [void]$html.AppendLine("</html>")
 
@@ -1029,8 +891,12 @@ function Invoke-GpoComparison {
     $Gpo1 = Get-GpoExtractedObjects -Path $Gpo1Path
     $Gpo2 = Get-GpoExtractedObjects -Path $Gpo2Path
 
-    $Gpo1ValueColumn = "$($Gpo1.Name) Value"
-    $Gpo2ValueColumn = "$($Gpo2.Name) Value"
+    $valueColumns = Get-GpoValueColumnNames `
+        -Gpo1Name $Gpo1.Name `
+        -Gpo2Name $Gpo2.Name
+
+    $Gpo1ValueColumn = $valueColumns.Gpo1ValueColumn
+    $Gpo2ValueColumn = $valueColumns.Gpo2ValueColumn
 
     $commonCompareParameters = @{
         Gpo1ValueColumn = $Gpo1ValueColumn
@@ -1194,7 +1060,7 @@ function Invoke-GpoComparison {
     $safeGpo1Name = $Gpo1.Name -replace '[\\/:*?"<>|]', '_'
     $safeGpo2Name = $Gpo2.Name -replace '[\\/:*?"<>|]', '_'
 
-    $CsvOutputPath  = Join-Path $OutputFolder "$safeGpo1Name-vs-$safeGpo2Name-GPO_Differences.csv"
+    $CsvOutputPath = Join-Path $OutputFolder "$safeGpo1Name-vs-$safeGpo2Name-GPO_Differences.csv"
     $HtmlOutputPath = Join-Path $OutputFolder "$safeGpo1Name-vs-$safeGpo2Name-GPO_Differences.html"
 
     $SortedDifferences |
